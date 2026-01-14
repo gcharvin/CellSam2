@@ -39,14 +39,32 @@ def parse_args():
     parser.add_argument(
         "--box_nms_thresh",
         type=float,
-        default=0.5,
+        default=0.7,
         help="Non-maximum suppression threshold for bounding boxes",
     )
     parser.add_argument(
         "--pred_iou_thresh",
         type=float,
-        default=0.7,
+        default=0.3,
         help="IoU threshold for predictions",
+    )
+    parser.add_argument(
+        "--obj_score_thresh",
+        type=float,
+        default=0.0,
+        help="Object score threshold (logit)",
+    )
+    parser.add_argument(
+        "--div_obj_score_thresh",
+        type=float,
+        default=-4.0,
+        help="Division score threshold (logit)",
+    )
+    parser.add_argument(
+        "--min_mask_area",
+        type=int,
+        default=10,
+        help="Minimum area for keeping masks",
     )
     parser.add_argument(
         "--segment",
@@ -147,9 +165,10 @@ def main():
     tracker = SAM2AutomaticCellTracker(
         sam2_model,
         pred_iou_thresh=args.pred_iou_thresh,
-        obj_score_thresh=0,
-        div_obj_score_thresh=0,
+        obj_score_thresh=args.obj_score_thresh,
+        div_obj_score_thresh=args.div_obj_score_thresh,
         box_nms_thresh=args.box_nms_thresh,
+        min_mask_area=args.min_mask_area,
         segment=args.segment,
         use_heatmap=args.use_heatmap,
     )

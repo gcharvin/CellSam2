@@ -28,7 +28,7 @@ class SAM2AutomaticCellTracker:
         mask_threshold: float = 0.0,
         segment: bool = False,
         use_heatmap: bool = False,
-        min_mask_area: int = 30,
+        min_mask_area: int = 10,
     ) -> None:
         """Using a SAM 2 model, generates and tracks masks for an entire video.
         Generates a grid of point prompts over the first frame, then tracks the detected cells
@@ -1107,6 +1107,13 @@ class SAM2AutomaticCellTracker:
             ),
             dtype=np.uint8,
         )
+        parent_map = {}
+        if not self.segment:
+            res_track = inference_state.get("res_track")
+            if res_track is not None and len(res_track) > 0:
+                for cell_id, _, _, parent_id in res_track:
+                    if parent_id != 0:
+                        parent_map[int(cell_id)] = int(parent_id)
 
         for frame_idx, track_mask in enumerate(tracking_results):
             img = read_image(str(inference_state["video_path"] / f"t{frame_idx:03d}.tif"), return_np=True)
@@ -1125,6 +1132,7 @@ class SAM2AutomaticCellTracker:
             # Blend original image with colored overlay
             color_stack[frame_idx] = cv2.addWeighted(img, 1 - alpha, overlay, alpha, 0)
 
+            centroids = {}
             for cell_id in cell_ids:
                 mask = track_mask == cell_id
                 y_coords, x_coords = np.where(mask)
@@ -1133,6 +1141,7 @@ class SAM2AutomaticCellTracker:
 
                 centroid_y = int(np.mean(y_coords))
                 centroid_x = int(np.mean(x_coords))
+                centroids[int(cell_id)] = (centroid_x, centroid_y)
 
                 cv2.putText(
                     color_stack[frame_idx],
@@ -1145,41 +1154,19 @@ class SAM2AutomaticCellTracker:
                     cv2.LINE_AA,
                 )
 
-            if not self.segment:
-                parent_ids = inference_state["parent_ids"][frame_idx].cpu().numpy()
-                parent_ids_unique = np.unique(parent_ids)
-                parent_ids_unique = parent_ids_unique[parent_ids_unique != 0]
-
-                for parent_id in parent_ids_unique:
-                    dau_cell_ids = (
-                        inference_state["obj_ids"][frame_idx][parent_ids == parent_id]
-                        .cpu()
-                        .numpy()
-                    )
-
-                    # Draw line between daughter cells
-                    if len(dau_cell_ids) == 2:
-                        # Get centroids of both daughter cells
-                        mask1 = track_mask == dau_cell_ids[0]
-                        y1, x1 = np.where(mask1)
-                        if len(y1) > 0:
-                            centroid1_y = int(np.mean(y1))
-                            centroid1_x = int(np.mean(x1))
-
-                            mask2 = track_mask == dau_cell_ids[1]
-                            y2, x2 = np.where(mask2)
-                            if len(y2) > 0:
-                                centroid2_y = int(np.mean(y2))
-                                centroid2_x = int(np.mean(x2))
-
-                                # Draw line connecting centroids
-                                cv2.line(
-                                    color_stack[frame_idx],
-                                    (centroid1_x, centroid1_y),
-                                    (centroid2_x, centroid2_y),
-                                    (0, 0, 0),  # Black color
-                                    1,
-                                )  # Line thickness
+            if not self.segment and parent_map:
+                for child_id, parent_id in parent_map.items():
+                    child_centroid = centroids.get(child_id)
+                    parent_centroid = centroids.get(parent_id)
+                    if child_centroid is None or parent_centroid is None:
+                        continue
+                    cv2.line(
+                        color_stack[frame_idx],
+                        child_centroid,
+                        parent_centroid,
+                        (0, 0, 0),  # Black color
+                        1,
+                    )  # Line thickness
 
             # Add frame number to top of frame
             cv2.putText(

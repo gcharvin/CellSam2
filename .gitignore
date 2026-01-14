@@ -1,5 +1,7 @@
 .vscode/
 results/*
+sam2_logs/*
+debug/*
 .DS_Store
 __pycache__/
 *-checkpoint.ipynb
