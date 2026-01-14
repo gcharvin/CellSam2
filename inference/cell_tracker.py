@@ -827,23 +827,64 @@ class SAM2AutomaticCellTracker:
             }
             inference_state["lost_high_res_masks"] = {}
         else:
-            # Get all potential mother cells before NMS
-            mother_ids = obj_ids[is_dividing]
-            daughter_ids = torch.arange(
-                inference_state["max_obj_id"] + 1,
-                inference_state["max_obj_id"] + 1 + len(mother_ids) * 2,
-                device=self.device,
-                dtype=torch.int32,
-            )
-            daughter_ids_list = daughter_ids.new_zeros(
-                (len(obj_ids), 2), dtype=torch.int32
-            )
-            daughter_ids_list[is_dividing] = daughter_ids.reshape(-1, 2)
-
+            # Build post-division object IDs in the same order as SAM masks.
             prev_obj_ids = obj_ids.clone()
+            mother_ids = obj_ids[is_dividing]
+            daughter_ids_list = prev_obj_ids.new_zeros(
+                (len(prev_obj_ids), 2), dtype=torch.int32
+            )
 
-            # Update obj_ids to include all potential daughters, even if they might be removed by NMS
-            obj_ids = torch.cat([obj_ids[~is_dividing], daughter_ids])
+            prev_masks = None
+            prev_obj_ids_cache = None
+            if inference_state.get("prev_frame_idx") == frame_idx - 1:
+                prev_masks = inference_state.get("prev_masks")
+                prev_obj_ids_cache = inference_state.get("prev_obj_ids")
+
+            prev_mask_lookup = {}
+            if prev_masks is not None and prev_obj_ids_cache is not None:
+                for idx, obj_id in enumerate(prev_obj_ids_cache):
+                    prev_mask_lookup[int(obj_id.item())] = idx
+
+            non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
+            div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
+
+            obj_ids_for_masks = []
+            for idx in non_div_indices.tolist():
+                obj_ids_for_masks.append(int(obj_ids[idx].item()))
+
+            bud_ids = []
+            non_div_count = len(non_div_indices)
+            for div_counter, idx in enumerate(div_indices.tolist()):
+                mother_id = int(obj_ids[idx].item())
+                bud_id = inference_state["max_obj_id"] + 1 + div_counter
+                bud_ids.append(bud_id)
+                daughter_ids_list[idx, 0] = bud_id
+
+                mask_idx0 = non_div_count + 2 * div_counter
+                mask_idx1 = mask_idx0 + 1
+
+                mother_first = True
+                prev_idx = prev_mask_lookup.get(mother_id)
+                if prev_idx is not None:
+                    prev_mask = prev_masks[prev_idx] > self.mask_threshold
+                    mask0 = save_masks[mask_idx0, 0] > self.mask_threshold
+                    mask1 = save_masks[mask_idx1, 0] > self.mask_threshold
+                    inter0 = (mask0 & prev_mask).sum()
+                    union0 = (mask0 | prev_mask).sum()
+                    inter1 = (mask1 & prev_mask).sum()
+                    union1 = (mask1 | prev_mask).sum()
+                    iou0 = inter0 / (union0 + 1e-6)
+                    iou1 = inter1 / (union1 + 1e-6)
+                    mother_first = bool(iou0 >= iou1)
+
+                if mother_first:
+                    obj_ids_for_masks.extend([mother_id, bud_id])
+                else:
+                    obj_ids_for_masks.extend([bud_id, mother_id])
+
+            obj_ids = torch.tensor(
+                obj_ids_for_masks, device=self.device, dtype=torch.int32
+            )
 
             # Now filter based on NMS results
             lost_obj_ids = obj_ids[valid_next_frame_mask * (~keep_tokens)]
@@ -870,28 +911,22 @@ class SAM2AutomaticCellTracker:
                 len(obj_ids), device=self.device, dtype=torch.int32
             )
 
-            # Update parent IDs for daughters that survived NMS
-            for mother_id, pair_daughter_ids in zip(
-                mother_ids, daughter_ids.reshape(-1, 2), strict=False
-            ):
-                if pair_daughter_ids[0] in obj_ids and pair_daughter_ids[1] in obj_ids:
-                    mask0 = obj_ids == pair_daughter_ids[0]
-                    mask1 = obj_ids == pair_daughter_ids[1]
-                    parent_ids[mask0] = mother_id
-                    parent_ids[mask1] = mother_id
+            # Update parent IDs for buds that survived NMS, preserve mother IDs.
+            for div_idx, mother_id in enumerate(mother_ids.tolist()):
+                mother_id = int(mother_id)
+                bud_id = bud_ids[div_idx]
+                mother_present = bool((obj_ids == mother_id).any())
+                bud_present = bool((obj_ids == bud_id).any())
+
+                if bud_present and mother_present:
+                    parent_ids[obj_ids == bud_id] = mother_id
+                elif bud_present and not mother_present:
+                    # If mother was dropped but bud survived, keep the mother ID.
+                    obj_ids[obj_ids == bud_id] = mother_id
+                    daughter_ids_list[div_indices[div_idx], 0] = 0
                 else:
-                    # if one of the daughter cells is not in the final_obj_ids due to nms, then the other daughter cell must be the mother cell
-                    dau_id = (
-                        pair_daughter_ids[0]
-                        if pair_daughter_ids[0] in obj_ids
-                        else pair_daughter_ids[1]
-                    )
-                    obj_ids[obj_ids == dau_id] = mother_id
-                    mother_ids = mother_ids[mother_ids != mother_id]
-                    daughter_ids_list = daughter_ids_list.clone()
-                    daughter_ids_list[
-                        torch.isin(daughter_ids_list, pair_daughter_ids)
-                    ] = 0
+                    # Bud was dropped.
+                    daughter_ids_list[div_indices[div_idx], 0] = 0
 
             inference_state["obj_ids"][frame_idx] = obj_ids
             inference_state["max_obj_id"] = max(
@@ -940,6 +975,9 @@ class SAM2AutomaticCellTracker:
                 (inference_state["video_height"], inference_state["video_width"]),
                 dtype=np.uint16,
             )
+            inference_state["prev_frame_idx"] = frame_idx
+            inference_state["prev_masks"] = data["save_masks"].detach()
+            inference_state["prev_obj_ids"] = obj_ids.detach()
             return inference_state, track_mask
 
         track_mask = self.postprocess_mask(data["save_masks"], inference_state)
@@ -955,6 +993,19 @@ class SAM2AutomaticCellTracker:
         valid_pixels = max_values > self.mask_threshold
         obj_ids_np = obj_ids.cpu().numpy()
         track_mask[valid_pixels] = obj_ids_np[arg_max[valid_pixels]]
+
+        if inference_state.get("prev_frame_idx") == frame_idx:
+            # Merge heatmap detections into per-frame cache for next step.
+            inference_state["prev_masks"] = torch.cat(
+                [inference_state["prev_masks"], data["save_masks"].detach()], dim=0
+            )
+            inference_state["prev_obj_ids"] = torch.cat(
+                [inference_state["prev_obj_ids"], obj_ids.detach()], dim=0
+            )
+        else:
+            inference_state["prev_frame_idx"] = frame_idx
+            inference_state["prev_masks"] = data["save_masks"].detach()
+            inference_state["prev_obj_ids"] = obj_ids.detach()
 
         return inference_state, track_mask
 
