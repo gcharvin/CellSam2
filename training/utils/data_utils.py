@@ -192,6 +192,7 @@ def collate_fn(
     step_t_cell_tracks_mask = [[] for _ in range(T)]
     step_t_target_obj_mask = [[] for _ in range(T)]
     step_t_daughter_ids = [[] for _ in range(T)]
+    step_t_mother_ids = [[] for _ in range(T)]
     step_t_no_inputs = []
     step_t_centroids = [[] for _ in range(T)]
 
@@ -202,6 +203,8 @@ def collate_fn(
             objects = frame.objects
             dividing_masks = {}
             dividing_centroids = {}
+            mother_masks = {}
+            mother_centroids = {}
             for obj in objects:
                 if obj.object_id == -1000:
                     bkgd_masks[t,video_idx] += obj.segment.to(torch.bool)
@@ -209,8 +212,8 @@ def collate_fn(
 
                 centroid = get_centroids_from_mask(obj.segment)
 
-                # Divided cells are only used for the masks since the mother cells are the inputs to the frame
-                if t > 0 and obj.entering and obj.parent_id > 0:                      
+                # Budding daughters are only used for the masks since the mother cells are the inputs to the frame
+                if obj.entering and obj.parent_id > 0:
                     dividing_masks[obj.object_id] = obj.segment.to(torch.bool)
                     dividing_centroids[obj.object_id] = centroid
                     continue 
@@ -219,6 +222,7 @@ def collate_fn(
                     step_t_daughter_ids[t].append(obj.daughter_ids)
                 else:
                     step_t_daughter_ids[t].append(torch.zeros((2), dtype=torch.int32))
+                step_t_mother_ids[t].append(obj.object_id)
 
                 orig_obj_id = obj.object_id
                 orig_frame_idx = obj.frame_index
@@ -226,9 +230,10 @@ def collate_fn(
                     torch.tensor([t, video_idx], dtype=torch.int)
                 )
 
-                # Skip the mask of the mother cell dividing since we will use the daugher cells masks instead
-                # The mother cell is the input and the daughter cells are the outputs
-                if obj.daughter_ids.sum() == 0:
+                if obj.daughter_ids.sum() > 0:
+                    mother_masks[obj.object_id] = obj.segment.to(torch.bool)
+                    mother_centroids[obj.object_id] = centroid
+                else:
                     step_t_masks[t].append(obj.segment.to(torch.bool))
                     step_t_centroids[t].append(centroid)
 
@@ -244,9 +249,16 @@ def collate_fn(
                 step_t_cell_tracks_mask[t].append((obj.is_in_next_object_ids_list))
                 step_t_target_obj_mask[t].append(obj.segment.sum() > 0 or obj.daughter_ids.sum() > 0)
 
-            for daughter_ids in step_t_daughter_ids[t]:
+            for mother_id, daughter_ids in zip(step_t_mother_ids[t], step_t_daughter_ids[t], strict=False):
                 if daughter_ids.sum() > 0:
+                    if mother_id in mother_masks:
+                        step_t_masks[t].append(mother_masks[mother_id])
+                        step_t_centroids[t].append(mother_centroids[mother_id])
                     for daughter_id in daughter_ids:
+                        if daughter_id.item() == 0:
+                            continue
+                        if int(daughter_id) not in dividing_masks:
+                            continue
                         step_t_masks[t].append(dividing_masks[int(daughter_id)])
                         step_t_centroids[t].append(dividing_centroids[int(daughter_id)])
 
@@ -266,6 +278,7 @@ def collate_fn(
             step_t_cell_tracks_mask[t].append(torch.zeros(1, dtype=torch.bool))
             step_t_target_obj_mask[t].append(torch.zeros(1, dtype=torch.bool))
             step_t_daughter_ids[t].append(torch.zeros((2), dtype=torch.int32))
+            step_t_mother_ids[t].append(0)
             step_t_centroids[t].append(torch.zeros((2), dtype=torch.float32))
 
     # Stack tensors for each time step

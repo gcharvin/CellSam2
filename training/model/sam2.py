@@ -153,6 +153,42 @@ class SAM2Train(SAM2Base):
             stage_id: input.masks[stage_id][input.is_real_masks[stage_id]].unsqueeze(1)  # [num_real_masks, 1, H_im, W_im]
             for stage_id in range(input.num_frames)
         }
+        prompt_masks_per_frame = {}
+        for stage_id in range(input.num_frames):
+            masks = input.masks[stage_id][input.is_real_masks[stage_id]]
+            obj_is_real = input.is_real[stage_id]
+            obj_div = input.cell_divides[stage_id][obj_is_real]
+            daughter_ids_list = input.daughter_ids[stage_id][obj_is_real]
+            if masks.numel() == 0 or obj_div.numel() == 0:
+                prompt_masks = masks
+            elif obj_div.any():
+                non_div_count = (~obj_div).sum().item()
+                non_div_idx = 0
+                div_idx = non_div_count
+                prompt_list = []
+                # Align prompts to object order using the mask layout (non-dividing first, then mother+buds).
+                for is_dividing, daughter_ids in zip(obj_div.tolist(), daughter_ids_list):
+                    if is_dividing:
+                        if div_idx < masks.shape[0]:
+                            prompt_list.append(masks[div_idx])
+                        num_buds = int((daughter_ids > 0).sum().item())
+                        div_idx += 1 + max(1, num_buds)
+                    else:
+                        if non_div_idx < masks.shape[0]:
+                            prompt_list.append(masks[non_div_idx])
+                        non_div_idx += 1
+                if len(prompt_list) == obj_div.numel():
+                    prompt_masks = torch.stack(prompt_list, dim=0)
+                else:
+                    logging.warning(
+                        "Prompt mask alignment mismatch at frame %s; falling back to first %s masks.",
+                        stage_id,
+                        obj_div.numel(),
+                    )
+                    prompt_masks = masks[: obj_div.numel()]
+            else:
+                prompt_masks = masks[: obj_div.numel()]
+            prompt_masks_per_frame[stage_id] = prompt_masks.unsqueeze(1)
         # gt_masks_per_frame = input.masks.unsqueeze(2) # [T,B,1,H_im,W_im] keep everything in tensor form
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
         num_frames = input.num_frames
@@ -218,7 +254,7 @@ class SAM2Train(SAM2Base):
         backbone_out["point_inputs_per_frame"] = {}  # {frame_idx: <input_points>}
         for t in init_cond_frames:
             if not use_pt_input:
-                backbone_out["mask_inputs_per_frame"][t] = gt_masks_per_frame[t]
+                backbone_out["mask_inputs_per_frame"][t] = prompt_masks_per_frame[t]
             else:
 
                 step_t_is_bkgd_mask, bkgd_masks = get_background_masks(input, t)
@@ -227,13 +263,13 @@ class SAM2Train(SAM2Base):
                 use_box_input = self.rng.random() < prob_to_use_box_input
                 if use_box_input and step_t_is_bkgd_mask.sum() == 0: # Only sample box points if there are no bkgd points
                     points, labels = sample_box_points(
-                        gt_masks_per_frame[t],
+                        prompt_masks_per_frame[t],
                     )
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
                     # ground-truth mask; we may sample more correction points on the fly)
                     points, labels = get_next_point(
-                        gt_masks=gt_masks_per_frame[t],
+                        gt_masks=prompt_masks_per_frame[t],
                         pred_masks=None,
                         method="uniform" if self.training else self.pt_sampling_for_eval,
                         is_bkgd_mask=step_t_is_bkgd_mask,
@@ -390,6 +426,9 @@ class SAM2Train(SAM2Base):
         # Set default for frames_to_add_correction_pt if None
         if frames_to_add_correction_pt is None:
             frames_to_add_correction_pt = []
+
+        # Align tracked IDs with objects present in the current frame.
+        tracking_object_ids = input.metadata.unique_objects_identifier[frame_idx][input.is_real[frame_idx]][:, 1]
             
         # Run the core tracking step
         current_out, sam_outputs, high_res_features, pix_feat = self._track_step(
@@ -443,17 +482,21 @@ class SAM2Train(SAM2Base):
 
         # Apply iterative correction points if needed
         if frame_idx in frames_to_add_correction_pt and keep_tokens_mask.sum() > 0:
-            assert frame_idx == 0 and is_dividing.sum() == 0
-            # Only add points to first frame
-            # Maybe adapt this for other frames but will need to handle dividing cells
-            current_out = self._iter_correct_pt_sampling(
-                point_inputs,
-                gt_masks,
-                high_res_features,
-                pix_feat,
-                current_out,
-                keep_tokens_mask,
-            )
+            if frame_idx == 0 and is_dividing.sum() == 0:
+                # Only add points to first frame when no division occurs.
+                current_out = self._iter_correct_pt_sampling(
+                    point_inputs,
+                    gt_masks,
+                    high_res_features,
+                    pix_feat,
+                    current_out,
+                    keep_tokens_mask,
+                )
+            else:
+                logging.warning(
+                    "Skipping correction points at frame %s due to division.",
+                    frame_idx,
+                )
 
         # Adjust vision features based on token count changes
         current_vision_feats = self._adjust_vision_features(
@@ -519,32 +562,51 @@ class SAM2Train(SAM2Base):
         pre_div_target_obj = input.target_obj_mask[frame_idx][input.is_real[frame_idx]].float()[:,None]
         current_out["pre_div_target_obj"] = [pre_div_target_obj]
 
-        # Create mask for tokens to keep after division
-        post_div_target_obj = torch.cat((
-            pre_div_target_obj[~is_dividing], 
-            torch.ones((is_dividing.sum()*2, 1), device=cell_tracks_mask.device).float()
-        ))
-        current_out["post_div_target_obj"] = [post_div_target_obj]
+        # Build post-division outputs in the same order as SAM masks:
+        # non-dividing outputs, then (mother + bud) for each dividing object.
+        post_div_target_obj_list = []
+        keep_tokens_mask_list = []
+        tracking_object_ids_list = []
 
-        # Create mask for tokens to keep after division
-        keep_tokens_mask = torch.cat((
-            cell_tracks_mask[~is_dividing], 
-            torch.ones(is_dividing.sum()*2, device=cell_tracks_mask.device).bool()
-        ))
-        current_out["multistep_is_point_used"] = [torch.ones_like(keep_tokens_mask).bool()]
-
-        # Update tracking object IDs to account for cell division
         prev_tracking_object_ids = tracking_object_ids.clone()
         mother_ids = tracking_object_ids[is_dividing]
         
-        # Get new daughter cell IDs (filter out padded entries)
-        new_daughter_ids = input.daughter_ids[frame_idx][input.is_real[frame_idx]].flatten()
-        new_daughter_ids = new_daughter_ids[new_daughter_ids > 0]
-        
-        # Update tracking object IDs - swap out mother ID with daughter IDs
-        tracking_object_ids = torch.cat((tracking_object_ids[~is_dividing], new_daughter_ids))
-        
-        # Filter out objects that are no longer tracked
+        daughter_ids_list = input.daughter_ids[frame_idx][input.is_real[frame_idx]]
+
+        non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
+        div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
+
+        for idx in non_div_indices.tolist():
+            track_mask = bool(cell_tracks_mask[idx].item())
+            obj_id = tracking_object_ids[idx]
+            tracking_object_ids_list.append(obj_id)
+            keep_tokens_mask_list.append(track_mask)
+            post_div_target_obj_list.append(pre_div_target_obj[idx])
+
+        for idx in div_indices.tolist():
+            track_mask = bool(cell_tracks_mask[idx].item())
+            obj_id = tracking_object_ids[idx]
+            tracking_object_ids_list.append(obj_id)
+            keep_tokens_mask_list.append(track_mask)
+            post_div_target_obj_list.append(pre_div_target_obj[idx])
+            for daughter_id in daughter_ids_list[idx]:
+                if daughter_id.item() == 0:
+                    continue
+                tracking_object_ids_list.append(daughter_id)
+                keep_tokens_mask_list.append(True)
+                post_div_target_obj_list.append(
+                    torch.ones_like(pre_div_target_obj[idx])
+                )
+
+        post_div_target_obj = torch.stack(post_div_target_obj_list, dim=0)
+        current_out["post_div_target_obj"] = [post_div_target_obj]
+
+        keep_tokens_mask = torch.tensor(
+            keep_tokens_mask_list, device=cell_tracks_mask.device, dtype=torch.bool
+        )
+        current_out["multistep_is_point_used"] = [torch.ones_like(keep_tokens_mask).bool()]
+
+        tracking_object_ids = torch.stack(tracking_object_ids_list, dim=0)
         tracking_object_ids = tracking_object_ids[keep_tokens_mask]
 
         # Update object pointers

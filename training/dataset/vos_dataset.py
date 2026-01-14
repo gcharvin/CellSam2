@@ -109,19 +109,26 @@ class VOSDataset(VisionDataset):
                     cell_info = man_track[man_track[:,0] == obj_id]
                     if len(cell_info) > 0:  # Check if cell_info is not empty
                         cell_info = cell_info[0]
-                        _, start_frame, end_frame, parent_id = cell_info
+                        _, start_frame, _, parent_id = cell_info
                         parent_id = int(parent_id)
 
                         # Cell is entering if current frame is its start frame
                         entering = bool(start_frame == frame.frame_idx)
 
-                        # Check if this cell has daughter cells and is currently dividing
-                        if obj_id in man_track[:,-1] and end_frame + 1 == frame.frame_idx:
-                            # Get IDs of daughter cells when division occurs
-                            daughter_ids = torch.tensor(
-                                man_track[man_track[:,-1] == obj_id, 0], 
-                                dtype=torch.int32
+                        # Budding: daughters appear when their start frame matches this frame
+                        daughter_rows = man_track[
+                            (man_track[:,3] == obj_id) & (man_track[:,1] == frame.frame_idx)
+                        ]
+                        if len(daughter_rows) > 0:
+                            raw_ids = torch.as_tensor(
+                                daughter_rows[:, 0], dtype=torch.int32
                             )
+                            if raw_ids.numel() >= 2:
+                                daughter_ids = raw_ids[:2]
+                            elif raw_ids.numel() == 1:
+                                daughter_ids = torch.tensor(
+                                    [raw_ids.item(), 0], dtype=torch.int32
+                                )
                 
                 # Determine if this cell should be tracked in the next frame
                 if frame_idx < len(sampled_object_ids_list) - 1:

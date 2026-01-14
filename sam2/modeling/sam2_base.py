@@ -1013,8 +1013,16 @@ class SAM2Base(torch.nn.Module):
                     logging.warning(f"Mother ID {mother_id_item} not found in memory dict")
                     continue
                     
-                if memory_dict[mother_id_item]["frame_idx"][-1] != frame_idx-1:
-                    logging.warning(f"Mother ID {mother_id_item} last frame is not {frame_idx-1}")
+                mother_frames = memory_dict[mother_id_item]["frame_idx"]
+                prev_frame_idx = None
+                for idx in range(len(mother_frames) - 1, -1, -1):
+                    if mother_frames[idx] <= frame_idx - 1:
+                        prev_frame_idx = idx
+                        break
+                if prev_frame_idx is None:
+                    logging.warning(
+                        f"Mother ID {mother_id_item} has no memory before frame {frame_idx}"
+                    )
                     continue
                 
                 # Transfer mother's memory to daughters
@@ -1028,17 +1036,26 @@ class SAM2Base(torch.nn.Module):
                         continue
                         
                     # Prepend mother's last memory to daughter's memory
+                    mother_frame = mother_frames[prev_frame_idx]
                     memory_dict[daughter_id_item]["mask_mem_features"] = torch.cat(
-                        (memory_dict[mother_id_item]["mask_mem_features"][-1:], 
-                         memory_dict[daughter_id_item]["mask_mem_features"]), 
-                        dim=0
+                        (
+                            memory_dict[mother_id_item]["mask_mem_features"][
+                                prev_frame_idx : prev_frame_idx + 1
+                            ],
+                            memory_dict[daughter_id_item]["mask_mem_features"],
+                        ),
+                        dim=0,
                     )
                     memory_dict[daughter_id_item]["obj_ptr"] = torch.cat(
-                        (memory_dict[mother_id_item]["obj_ptr"][-1:], 
-                         memory_dict[daughter_id_item]["obj_ptr"]), 
-                        dim=0
+                        (
+                            memory_dict[mother_id_item]["obj_ptr"][
+                                prev_frame_idx : prev_frame_idx + 1
+                            ],
+                            memory_dict[daughter_id_item]["obj_ptr"],
+                        ),
+                        dim=0,
                     )
-                    memory_dict[daughter_id_item]["frame_idx"].insert(0, frame_idx-1)
+                    memory_dict[daughter_id_item]["frame_idx"].insert(0, mother_frame)
             except Exception as e:
                 logging.error(f"Error handling memory for mother ID {mother_id.item()}: {str(e)}")
 
