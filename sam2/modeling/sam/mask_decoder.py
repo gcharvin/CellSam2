@@ -171,6 +171,7 @@ class MaskDecoder(nn.Module):
 
         # Determine which cells are dividing
         if is_dividing is None:
+            # More permissive: accept division when at least one daughter mask is high quality.
             is_dividing = (
                 (div_score_logits[:, 0] > self.div_obj_score_thresh)
                 & (object_score_logits[:, 0] > self.obj_score_thresh)

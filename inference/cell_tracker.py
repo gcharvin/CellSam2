@@ -827,7 +827,7 @@ class SAM2AutomaticCellTracker:
             }
             inference_state["lost_high_res_masks"] = {}
         else:
-            # Build post-division object IDs in the same order as SAM masks.
+            # Asymmetric division: keep the mother ID, add a new bud ID.
             prev_obj_ids = obj_ids.clone()
             mother_ids = obj_ids[is_dividing]
             daughter_ids_list = prev_obj_ids.new_zeros(
@@ -863,6 +863,7 @@ class SAM2AutomaticCellTracker:
                 mask_idx0 = non_div_count + 2 * div_counter
                 mask_idx1 = mask_idx0 + 1
 
+                # Decide which of the two predicted masks keeps the mother ID.
                 mother_first = True
                 prev_idx = prev_mask_lookup.get(mother_id)
                 if prev_idx is not None:
@@ -911,7 +912,7 @@ class SAM2AutomaticCellTracker:
                 len(obj_ids), device=self.device, dtype=torch.int32
             )
 
-            # Update parent IDs for buds that survived NMS, preserve mother IDs.
+            # Record lineage only for buds and preserve mother IDs if NMS drops them.
             for div_idx, mother_id in enumerate(mother_ids.tolist()):
                 mother_id = int(mother_id)
                 bud_id = bud_ids[div_idx]
@@ -995,7 +996,7 @@ class SAM2AutomaticCellTracker:
         track_mask[valid_pixels] = obj_ids_np[arg_max[valid_pixels]]
 
         if inference_state.get("prev_frame_idx") == frame_idx:
-            # Merge heatmap detections into per-frame cache for next step.
+            # Merge heatmap detections so next frame can match mother masks reliably.
             inference_state["prev_masks"] = torch.cat(
                 [inference_state["prev_masks"], data["save_masks"].detach()], dim=0
             )
@@ -1109,6 +1110,7 @@ class SAM2AutomaticCellTracker:
         )
         parent_map = {}
         if not self.segment:
+            # Persist mother->bud links across frames using res_track lineage.
             res_track = inference_state.get("res_track")
             if res_track is not None and len(res_track) > 0:
                 for cell_id, _, _, parent_id in res_track:
