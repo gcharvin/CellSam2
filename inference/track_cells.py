@@ -48,7 +48,6 @@ def parse_args():
         default=0.3,
         help="IoU threshold for predictions",
     )
-    # Logit thresholds for object/division heads (tuned for higher division recall).
     parser.add_argument(
         "--obj_score_thresh",
         type=float,

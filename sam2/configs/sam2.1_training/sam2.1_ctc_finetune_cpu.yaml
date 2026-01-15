@@ -279,13 +279,6 @@ trainer:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
         dict_key: all
-        # Division target shaping (windowing/bud/soft labels).
-        division_target_prev_window: 0
-        division_target_include_current: true
-        division_target_include_bud: false
-        division_target_soft: false
-        division_target_soft_scale: 1.0
-        division_target_soft_cap: 1.0
     val:
       _target_: training.dataset.sam2_datasets.SingleDataLoader
       batch_size: ${scratch.batch_size}
@@ -312,13 +305,6 @@ trainer:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
         dict_key: all
-        # Division target shaping (windowing/bud/soft labels).
-        division_target_prev_window: 0
-        division_target_include_current: true
-        division_target_include_bud: false
-        division_target_soft: false
-        division_target_soft_scale: 1.0
-        division_target_soft_cap: 1.0
 
   optim:
     amp:
@@ -378,7 +364,6 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 1
-        # Increase division loss weight to push the div head harder.
         loss_div: 3
         loss_heatmap: 1
       supervise_all_iou: true

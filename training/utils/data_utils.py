@@ -52,7 +52,6 @@ class BatchedVideoDatapoint:
     bkgd_masks: torch.BoolTensor
     dict_key: str
     cell_divides: torch.IntTensor
-    cell_divide_targets: torch.FloatTensor  # Optional soft/shifted division targets.
     cell_tracks_mask: torch.BoolTensor
     daughter_ids: torch.IntTensor
     no_inputs: torch.BoolTensor
@@ -166,18 +165,11 @@ def pad_and_stack(tensor_list, max_objects, pad_value=0):
 def collate_fn(
     batch: List[VideoDatapoint],
     dict_key,
-    division_target_prev_window: int = 0,
-    division_target_include_current: bool = True,
-    division_target_include_bud: bool = False,
-    division_target_soft: bool = False,
-    division_target_soft_scale: float = 1.0,
-    division_target_soft_cap: float = 1.0,
 ) -> BatchedVideoDatapoint:
     """
     Args:
         batch: A list of VideoDatapoint instances.
         dict_key (str): A string key used to identify the batch.
-        division_target_*: Parameters to build flexible division supervision targets.
     """
     img_batch = []
     for video in batch:
@@ -203,9 +195,6 @@ def collate_fn(
     step_t_mother_ids = [[] for _ in range(T)]
     step_t_no_inputs = []
     step_t_centroids = [[] for _ in range(T)]
-    # Track bud events and mother masks to build division targets later.
-    step_t_bud_events = [[] for _ in range(T)]
-    step_t_mother_masks = [{} for _ in range(T)]
 
     for video_idx, video in enumerate(batch):
         orig_video_id = video.video_id
@@ -225,18 +214,9 @@ def collate_fn(
 
                 # Budding daughters are only used for the masks since the mother cells are the inputs to the frame
                 if obj.entering and obj.parent_id > 0:
-                    # Bud events can be used as division targets for the mother.
-                    step_t_bud_events[t].append(
-                        ((orig_video_id, obj.parent_id), obj.segment.to(torch.bool))
-                    )
                     dividing_masks[obj.object_id] = obj.segment.to(torch.bool)
                     dividing_centroids[obj.object_id] = centroid
                     continue 
-
-                # Cache mother masks for optional bud/mother area ratios.
-                step_t_mother_masks[t][(orig_video_id, obj.object_id)] = obj.segment.to(
-                    torch.bool
-                )
 
                 if obj.daughter_ids.sum() > 0:
                     step_t_daughter_ids[t].append(obj.daughter_ids)
@@ -301,81 +281,12 @@ def collate_fn(
             step_t_mother_ids[t].append(0)
             step_t_centroids[t].append(torch.zeros((2), dtype=torch.float32))
 
-    # Build division targets with optional temporal windowing and bud-based labels.
-    step_t_divide_targets = [[] for _ in range(T)]
-    mother_index_map = []
-    for t in range(T):
-        step_t_divide_targets[t] = [0.0] * len(step_t_cell_divides[t])
-        idx_map = {}
-        for idx, ident in enumerate(step_t_objects_identifier[t]):
-            key = (int(ident[0]), int(ident[1]))
-            idx_map[key] = idx
-        mother_index_map.append(idx_map)
-
-    def set_div_target(frame_idx, key, value):
-        idx = mother_index_map[frame_idx].get(key)
-        if idx is None:
-            return
-        current = step_t_divide_targets[frame_idx][idx]
-        if value > current:
-            step_t_divide_targets[frame_idx][idx] = float(value)
-
-    prev_window = max(0, int(division_target_prev_window))
-    dividing_events = []
-    for t in range(T):
-        for idx, is_div in enumerate(step_t_cell_divides[t]):
-            if bool(is_div):
-                ident = step_t_objects_identifier[t][idx]
-                dividing_events.append((t, (int(ident[0]), int(ident[1]))))
-
-    # Optionally mark the mother at the division frame.
-    if division_target_include_current:
-        for t, key in dividing_events:
-            set_div_target(t, key, 1.0)
-
-    if prev_window > 0:
-        for t, key in dividing_events:
-            for offset in range(1, prev_window + 1):
-                t_prev = t - offset
-                if t_prev < 0:
-                    break
-                set_div_target(t_prev, key, 1.0)
-
-    # Optionally mark mothers using bud appearance (hard or soft labels).
-    if division_target_include_bud:
-        for t in range(T):
-            for key, bud_mask in step_t_bud_events[t]:
-                value = 1.0
-                if division_target_soft:
-                    # Soft label scales with bud/mother area ratio.
-                    mother_mask = step_t_mother_masks[t].get(key)
-                    if mother_mask is not None:
-                        bud_area = float(bud_mask.sum().item())
-                        mother_area = float(mother_mask.sum().item())
-                        ratio = bud_area / (mother_area + 1e-6)
-                        value = ratio * float(division_target_soft_scale)
-                        value = min(float(division_target_soft_cap), value)
-                        if value < 0.0:
-                            value = 0.0
-                    else:
-                        value = 1.0
-                set_div_target(t, key, value)
-                if prev_window > 0:
-                    for offset in range(1, prev_window + 1):
-                        t_prev = t - offset
-                        if t_prev < 0:
-                            break
-                        set_div_target(t_prev, key, value)
-
     # Stack tensors for each time step
     obj_to_frame_idx_per_t = [torch.stack(obj_to_frame_idx, dim=0) for obj_to_frame_idx in step_t_obj_to_frame_idx]
     masks_per_t = [torch.stack(masks, dim=0) for masks in step_t_masks]
     objects_identifier_per_t = [torch.stack(id, dim=0) for id in step_t_objects_identifier]
     frame_orig_size_per_t = [torch.stack(id, dim=0) for id in step_t_frame_orig_size]
     cell_divides_per_t = [torch.stack(id, dim=0) for id in step_t_cell_divides]
-    cell_divide_targets_per_t = [
-        torch.tensor(id, dtype=torch.float32) for id in step_t_divide_targets
-    ]
     cell_tracks_mask_per_t = [torch.tensor(id, dtype=torch.bool) for id in step_t_cell_tracks_mask]
     target_obj_mask_per_t = [torch.stack(id, dim=0) for id in step_t_target_obj_mask]
     daughter_ids_per_t = [torch.stack(id, dim=0) for id in step_t_daughter_ids]
@@ -418,9 +329,6 @@ def collate_fn(
     objects_identifier = pad_and_stack(objects_identifier_per_t, max_objects, pad_value=0)
     frame_orig_size = pad_and_stack(frame_orig_size_per_t, max_objects, pad_value=0)
     cell_divides = pad_and_stack(cell_divides_per_t, max_objects, pad_value=False)
-    cell_divide_targets = pad_and_stack(
-        cell_divide_targets_per_t, max_objects, pad_value=0.0
-    )
     cell_tracks_mask = pad_and_stack(cell_tracks_mask_per_t, max_objects, pad_value=False)
     target_obj_mask = pad_and_stack(target_obj_mask_per_t, max_objects, pad_value=False)
     daughter_ids = pad_and_stack(daughter_ids_per_t, max_objects, pad_value=0)
@@ -436,7 +344,6 @@ def collate_fn(
         ),
         bkgd_masks=bkgd_masks,
         cell_divides=cell_divides,
-        cell_divide_targets=cell_divide_targets,
         cell_tracks_mask=cell_tracks_mask,
         target_obj_mask=target_obj_mask,
         daughter_ids=daughter_ids,

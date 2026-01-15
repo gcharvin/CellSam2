@@ -482,9 +482,7 @@ class Trainer:
         T = is_real.shape[0]
         
         targets = [batch.masks[t][is_real_masks[t]] for t in range(T)]
-        # Use flexible division targets if available (shifted/soft supervision).
-        divide_source = getattr(batch, "cell_divide_targets", batch.cell_divides)
-        target_divide = [divide_source[t][is_real[t]] for t in range(T)]
+        target_divide = [batch.cell_divides[t][is_real[t]] for t in range(T)]
         target_heatmaps = [batch.heatmaps[t] for t in range(T)]  # heatmaps are per frame, not per object
         
         batch_size = len(batch.img_batch)
