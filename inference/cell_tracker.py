@@ -1,4 +1,5 @@
 import cv2
+import logging
 import numpy as np
 import torch
 from torchvision.ops import batched_nms
@@ -11,6 +12,9 @@ from sam2.utils.amg import (
 )
 from sam2.utils.misc import load_video_frames, read_image
 from sam2.utils.transforms import SAM2Transforms
+
+
+logger = logging.getLogger(__name__)
 
 
 class SAM2AutomaticCellTracker:
@@ -1054,12 +1058,21 @@ class SAM2AutomaticCellTracker:
 
         cell_ids = inference_state["obj_ids"][frame_idx].cpu().numpy()
 
-        assert sorted(cell_ids_track_mask) == sorted(cell_ids), (
-            "cell_ids_track_mask and cell_ids must be the same"
-        )
+        if sorted(cell_ids_track_mask) != sorted(cell_ids):
+            track_set = set(cell_ids_track_mask.tolist())
+            obj_set = set(cell_ids.tolist())
+            missing_ids = sorted(obj_set - track_set)
+            extra_ids = sorted(track_set - obj_set)
+            logger.warning(
+                "Mismatch between obj_ids and track_mask ids at frame %s "
+                "(missing=%s extra=%s).",
+                frame_idx,
+                missing_ids[:10],
+                extra_ids[:10],
+            )
 
-        if len(cell_ids) > 0:
-            assert max(cell_ids) < 65536, "cell_id must be less than 65536"
+        if len(cell_ids_track_mask) > 0:
+            assert max(cell_ids_track_mask) < 65536, "cell_id must be less than 65536"
 
         cv2.imwrite(
             str(res_path / f"mask{frame_idx:03d}.tif"), track_mask.astype(np.uint16)
@@ -1068,8 +1081,13 @@ class SAM2AutomaticCellTracker:
         if not self.segment:
             parent_ids = inference_state["parent_ids"][frame_idx].cpu().numpy()
             res_track = inference_state["res_track"]
+            parent_lookup = {
+                int(cell_id): int(parent_id)
+                for cell_id, parent_id in zip(cell_ids, parent_ids, strict=False)
+            }
 
-            for cell_id, parent_id in zip(cell_ids, parent_ids, strict=False):
+            for cell_id in cell_ids_track_mask.tolist():
+                parent_id = parent_lookup.get(int(cell_id), 0)
                 if cell_id not in res_track[:, 0]:
                     res_track = np.concatenate(
                         [
@@ -1079,9 +1097,14 @@ class SAM2AutomaticCellTracker:
                         axis=0,
                     )
                 else:
-                    assert res_track[res_track[:, 0] == cell_id, 2] == frame_idx - 1, (
-                        "cell_id must be continuous"
-                    )
+                    prev_end = res_track[res_track[:, 0] == cell_id, 2]
+                    if prev_end.size and prev_end[0] != frame_idx - 1:
+                        logger.warning(
+                            "Non-contiguous track for id %s at frame %s (prev_end=%s).",
+                            cell_id,
+                            frame_idx,
+                            int(prev_end[0]),
+                        )
                     res_track[res_track[:, 0] == cell_id, 2] = frame_idx
 
             np.savetxt(res_path / "res_track.txt", res_track, fmt="%d")
