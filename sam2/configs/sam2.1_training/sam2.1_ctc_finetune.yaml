@@ -227,7 +227,7 @@ trainer:
 
     pred_iou_thresh: 0.7
     obj_score_thresh: 0.5
-    div_obj_score_thresh: 0.5
+    div_obj_score_thresh: 0.1
 
     ####### Training specific params #######
     # box/point input and corrections
@@ -268,6 +268,7 @@ trainer:
             train_dir: ${dataset.data_dir}/train/CTC
             num_frames: ${scratch.num_frames}
             file_list_txt: ${dataset.file_list_txt}  # optional
+            division_oversample_factor: 3
           sampler:
             _target_: training.dataset.vos_sampler.FrameIndexSampler
             max_num_objects: ${scratch.max_num_objects}
@@ -367,7 +368,7 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 1
-        loss_div: 3
+        loss_div: 6
         loss_heatmap: 1
       supervise_all_iou: true
       iou_use_l1_loss: true

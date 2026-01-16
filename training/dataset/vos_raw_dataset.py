@@ -58,13 +58,15 @@ class CTCRawDataset(VOSRawDataset):
                  file_list_txt=None,
                  excluded_videos_list_txt=None,
                  truncate_video=-1,
-                 sample_rate=1):
+                 sample_rate=1,
+                 division_oversample_factor=1):
         
         self.train_dir = Path(train_dir)
         self.img_folders = list(self.train_dir.glob("[0-9][0-9]"))
         self.num_frames = num_frames
         self.truncate_video = truncate_video
         self.sample_rate = sample_rate
+        self.division_oversample_factor = max(1, int(division_oversample_factor))
 
         # Read the subset defined in file_list_txt
         if file_list_txt is not None:
@@ -90,11 +92,33 @@ class CTCRawDataset(VOSRawDataset):
         for video_name in self.video_names:
             # For initialization, we need all frames to know how many starting points we have
             all_frames = self.get_all_frames(video_name)
+            frame_ids = [
+                int(re.findall(r'\d+', fpath.stem)[0]) for fpath in all_frames
+            ]
+
+            div_start_frames = set()
+            track_path = (
+                self.train_dir / (video_name + "_GT") / "TRA" / "man_track.txt"
+            )
+            if track_path.exists():
+                man_track = np.loadtxt(track_path, dtype=np.int16)
+                if man_track.ndim == 1:
+                    man_track = man_track.reshape(1, -1)
+                div_start_frames = set(
+                    man_track[man_track[:, 3] > 0, 1].astype(int).tolist()
+                )
+            frame_has_div = [fid in div_start_frames for fid in frame_ids]
             
             # For each possible start frame that allows num_frames sequence
             max_start_idx = len(all_frames) - self.num_frames + 1 if self.num_frames > 1 else len(all_frames)
             for i in range(0, max_start_idx):
                 self.frame_index.append((video_name, i))
+                if (
+                    self.division_oversample_factor > 1
+                    and any(frame_has_div[i : i + self.num_frames])
+                ):
+                    for _ in range(self.division_oversample_factor - 1):
+                        self.frame_index.append((video_name, i))
 
     def __len__(self):
         return len(self.frame_index)
