@@ -131,29 +131,31 @@ class CTCRawDataset(VOSRawDataset):
         # Load man_track if available
         if (self.train_dir / (video_name + "_GT") / "TRA" / "man_track.txt").exists():
             man_track = np.loadtxt(self.train_dir / (video_name + "_GT") / "TRA" / "man_track.txt", dtype=np.int16)
-            # Step 1: Remove parent IDs that appear only once and are positive
-            parent_ids, counts = np.unique(man_track[:, -1], return_counts=True)
-            single_use_parents = parent_ids[(counts == 1) & (parent_ids > 0)]
-
-            if len(single_use_parents) > 0:
-                mask = np.isin(man_track[:, -1], single_use_parents)
-                man_track[mask, -1] = 0
-
-            # Step 2: Remove parent IDs whose exit frame is not exactly one before their daughter’s entry
-            valid_parents = parent_ids[(counts == 2) & (parent_ids > 0)]
-
-            for parent_id in valid_parents:
-                parent_row = man_track[man_track[:, 0] == parent_id]
-                daughter_rows = man_track[man_track[:, -1] == parent_id]
-
-                if len(parent_row) == 0 or len(daughter_rows) == 0:
-                    continue
-
-                parent_exit_frame = parent_row[0, 2]  # column 2 = end frame
-                dau_entry_frame = daughter_rows[:, 1].min()  # column 1 = start frame
-
-                if dau_entry_frame != parent_exit_frame + 1:
-                    man_track[man_track[:, -1] == parent_id, -1] = 0
+            # NOTE: Lineage cleanup is disabled for asymmetric budding.
+            # The original cleanup assumed symmetric division: parent_id should appear twice
+            # and the mother should disappear right before daughters appear. That is not
+            # true for budding, so we keep man_track as-is for now.
+            # parent_ids, counts = np.unique(man_track[:, -1], return_counts=True)
+            # single_use_parents = parent_ids[(counts == 1) & (parent_ids > 0)]
+            #
+            # if len(single_use_parents) > 0:
+            #     mask = np.isin(man_track[:, -1], single_use_parents)
+            #     man_track[mask, -1] = 0
+            #
+            # valid_parents = parent_ids[(counts == 2) & (parent_ids > 0)]
+            #
+            # for parent_id in valid_parents:
+            #     parent_row = man_track[man_track[:, 0] == parent_id]
+            #     daughter_rows = man_track[man_track[:, -1] == parent_id]
+            #
+            #     if len(parent_row) == 0 or len(daughter_rows) == 0:
+            #         continue
+            #
+            #     parent_exit_frame = parent_row[0, 2]  # column 2 = end frame
+            #     dau_entry_frame = daughter_rows[:, 1].min()  # column 1 = start frame
+            #
+            #     if dau_entry_frame != parent_exit_frame + 1:
+            #         man_track[man_track[:, -1] == parent_id, -1] = 0
 
         else:
             man_track = None
