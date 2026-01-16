@@ -8,6 +8,7 @@ import logging
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from sam2.modeling.sam2_base import SAM2Base
 from sam2.modeling.sam2_utils import (
@@ -63,6 +64,8 @@ class SAM2Train(SAM2Base):
         # of all frames at once. This avoids backbone OOM errors on very long videos in evaluation, but could be slightly slower.
         forward_backbone_per_frame_for_eval=False,
         freeze_image_encoder=False,
+        div_ring_radius=0,
+        div_ring_point_prob=1.0,
         **kwargs,
     ):
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
@@ -94,6 +97,8 @@ class SAM2Train(SAM2Base):
         self.num_correction_pt_per_frame = num_correction_pt_per_frame
         self.pt_sampling_for_eval = pt_sampling_for_eval
         self.prob_to_sample_from_gt_for_train = prob_to_sample_from_gt_for_train
+        self.div_ring_radius = max(0, int(div_ring_radius))
+        self.div_ring_point_prob = float(max(0.0, min(1.0, div_ring_point_prob)))
         # A random number generator with a fixed initial seed across GPUs
         self.rng = np.random.default_rng(seed=42)
 
@@ -112,6 +117,37 @@ class SAM2Train(SAM2Base):
         previous_stages_out = self.forward_tracking(backbone_out, input)
 
         return previous_stages_out
+
+    def _compute_ring_masks(self, masks: torch.Tensor, radius: int) -> torch.Tensor:
+        if radius <= 0:
+            return torch.zeros_like(masks, dtype=torch.bool)
+        masks_bool = masks.bool()
+        kernel = 2 * radius + 1
+        dilated = F.max_pool2d(
+            masks_bool.float(), kernel_size=kernel, stride=1, padding=radius
+        )
+        return (dilated > 0.5) & (~masks_bool)
+
+    def _sample_ring_points(
+        self, masks: torch.Tensor, div_flags: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ring_masks = self._compute_ring_masks(masks, self.div_ring_radius)
+        div_flags = div_flags.to(masks.device)
+        bsz = masks.shape[0]
+        points = torch.zeros((bsz, 1, 2), device=masks.device, dtype=torch.float)
+        labels = -torch.ones((bsz, 1), device=masks.device, dtype=torch.int32)
+        for idx in range(bsz):
+            if not div_flags[idx]:
+                continue
+            ring = ring_masks[idx, 0]
+            if not ring.any():
+                continue
+            ys, xs = ring.nonzero(as_tuple=True)
+            pick = torch.randint(0, xs.numel(), (1,), device=xs.device).item()
+            points[idx, 0, 0] = xs[pick]
+            points[idx, 0, 1] = ys[pick]
+            labels[idx, 0] = 1
+        return points, labels
 
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
         """Compute the image backbone features on the fly for the given img_ids."""
@@ -154,11 +190,13 @@ class SAM2Train(SAM2Base):
             for stage_id in range(input.num_frames)
         }
         prompt_masks_per_frame = {}
+        div_flags_per_frame = {}
         for stage_id in range(input.num_frames):
             masks = input.masks[stage_id][input.is_real_masks[stage_id]]
             obj_is_real = input.is_real[stage_id]
             obj_div = input.cell_divides[stage_id][obj_is_real]
             daughter_ids_list = input.daughter_ids[stage_id][obj_is_real]
+            div_flags_per_frame[stage_id] = obj_div
             if masks.numel() == 0 or obj_div.numel() == 0:
                 prompt_masks = masks
             elif obj_div.any():
@@ -285,6 +323,26 @@ class SAM2Train(SAM2Base):
                             points[-bkgd_points.shape[0]:] = bkgd_points
 
                 point_inputs = {"point_coords": points, "point_labels": labels}
+                if self.training and self.div_ring_radius > 0:
+                    div_flags = div_flags_per_frame.get(t)
+                    if div_flags is not None and div_flags.any():
+                        ring_points, ring_labels = self._sample_ring_points(
+                            prompt_masks_per_frame[t], div_flags
+                        )
+                        ring_mask = ring_labels[:, 0] > 0
+                        if self.div_ring_point_prob < 1.0 and ring_mask.any():
+                            keep = torch.rand(
+                                ring_mask.shape, device=ring_mask.device
+                            ) < self.div_ring_point_prob
+                            ring_mask = ring_mask & keep
+                        if ring_mask.any():
+                            # Replace the initial point with a ring point to expose bud context.
+                            points[ring_mask] = ring_points[ring_mask]
+                            labels[ring_mask] = ring_labels[ring_mask]
+                            point_inputs = {
+                                "point_coords": points,
+                                "point_labels": labels,
+                            }
                 backbone_out["point_inputs_per_frame"][t] = point_inputs
 
         # Sample frames where we will add correction clicks on the fly

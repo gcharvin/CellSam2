@@ -245,6 +245,9 @@ trainer:
     rand_init_cond_frames_for_train: True  # random 1~2
     num_correction_pt_per_frame: 5
     use_act_ckpt_iterative_pt_sampling: false
+    # Add a positive point in a ring around the mother mask for division events.
+    div_ring_radius: 4
+    div_ring_point_prob: 1.0
     
 
     
