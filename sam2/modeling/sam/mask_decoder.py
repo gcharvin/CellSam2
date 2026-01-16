@@ -6,6 +6,9 @@
 
 from typing import List, Optional, Tuple, Type
 
+import logging
+import os
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -126,6 +129,13 @@ class MaskDecoder(nn.Module):
         self.pred_iou_thresh = pred_iou_thresh
         self.obj_score_thresh = obj_score_thresh
         self.div_obj_score_thresh = div_obj_score_thresh
+        self._debug_div = self._env_flag("SAM2_DEBUG_DIV")
+        self._debug_div_freq = int(os.environ.get("SAM2_DEBUG_DIV_FREQ", "50"))
+        self._debug_div_step = 0
+        self._debug_div_tb_dir = os.environ.get("SAM2_DEBUG_DIV_TB_DIR")
+        self._debug_div_writer = None
+        self._debug_div_rank = int(os.environ.get("RANK", "0"))
+        self._debug_div_log_now = False
 
     def forward(
         self,
@@ -169,6 +179,10 @@ class MaskDecoder(nn.Module):
             high_res_features=high_res_features,
         )
 
+        is_dividing_provided = is_dividing is not None
+        debug_log_now = self._start_div_debug() if self.training else False
+        self._debug_div_log_now = debug_log_now
+
         # Determine which cells are dividing
         if is_dividing is None:
             is_dividing = (
@@ -179,6 +193,95 @@ class MaskDecoder(nn.Module):
         
         # Ensure is_dividing is a flat boolean tensor
         is_dividing = is_dividing.view(-1)
+
+        if debug_log_now:
+            with torch.no_grad():
+                div_scores = div_score_logits[:, 0].detach()
+                obj_scores = object_score_logits[:, 0].detach()
+                iou_pair = iou_pred[:, 1:3].detach()
+                iou_max = iou_pair.max(1).values
+                num_objects = is_dividing.numel()
+                num_div_input = int(is_dividing.sum().item())
+
+                pred_dividing = None
+                gate_div = gate_obj = gate_iou = gate_all = None
+                if (
+                    self.div_obj_score_thresh is not None
+                    and self.obj_score_thresh is not None
+                    and self.pred_iou_thresh is not None
+                ):
+                    gate_div = div_scores > self.div_obj_score_thresh
+                    gate_obj = obj_scores > self.obj_score_thresh
+                    gate_iou = (iou_pair > self.pred_iou_thresh).any(1)
+                    gate_all = gate_div & gate_obj & gate_iou
+                    pred_dividing = gate_all
+
+                num_div_pred = int(pred_dividing.sum().item()) if pred_dividing is not None else None
+                num_div_mismatch = None
+                if is_dividing_provided and pred_dividing is not None:
+                    num_div_mismatch = int((pred_dividing != is_dividing).sum().item())
+
+                scalars = {
+                    "div_debug/num_objects": float(num_objects),
+                    "div_debug/num_div_input": float(num_div_input),
+                    "div_debug/num_div_pred": float(num_div_pred) if num_div_pred is not None else None,
+                    "div_debug/num_div_mismatch": float(num_div_mismatch)
+                    if num_div_mismatch is not None
+                    else None,
+                    "div_debug/gate_div": float(gate_div.sum().item()) if gate_div is not None else None,
+                    "div_debug/gate_obj": float(gate_obj.sum().item()) if gate_obj is not None else None,
+                    "div_debug/gate_iou": float(gate_iou.sum().item()) if gate_iou is not None else None,
+                    "div_debug/gate_all": float(gate_all.sum().item()) if gate_all is not None else None,
+                    "div_debug/div_score_mean": float(div_scores.mean().item()),
+                    "div_debug/div_score_min": float(div_scores.min().item()),
+                    "div_debug/div_score_max": float(div_scores.max().item()),
+                    "div_debug/obj_score_mean": float(obj_scores.mean().item()),
+                    "div_debug/iou_max_mean": float(iou_max.mean().item()),
+                }
+
+                if num_div_input > 0 and num_div_input < num_objects:
+                    scalars["div_debug/div_score_mean_div"] = float(
+                        div_scores[is_dividing].mean().item()
+                    )
+                    scalars["div_debug/div_score_mean_non_div"] = float(
+                        div_scores[~is_dividing].mean().item()
+                    )
+
+                if is_dividing_provided and gate_all is not None:
+                    gt_div = is_dividing
+                    gt_div_count = int(gt_div.sum().item())
+                    if gt_div_count > 0:
+                        gt_gate_pass = int((gt_div & gate_all).sum().item())
+                        fn_mask = gt_div & ~gate_all
+                        scalars["div_debug/gt_gate_recall"] = gt_gate_pass / gt_div_count
+                        scalars["div_debug/gt_gate_pass"] = float(gt_gate_pass)
+                        scalars["div_debug/gt_gate_fn"] = float(fn_mask.sum().item())
+                        scalars["div_debug/gt_fn_fail_div"] = float(
+                            (fn_mask & ~gate_div).sum().item()
+                        )
+                        scalars["div_debug/gt_fn_fail_obj"] = float(
+                            (fn_mask & ~gate_obj).sum().item()
+                        )
+                        scalars["div_debug/gt_fn_fail_iou"] = float(
+                            (fn_mask & ~gate_iou).sum().item()
+                        )
+
+                source = "provided" if is_dividing_provided else "pred"
+                msg = (
+                    "Div debug(step=%s, source=%s): n=%s div_in=%s div_pred=%s"
+                    " gate(div/obj/iou/all)=%s/%s/%s/%s"
+                ) % (
+                    self._debug_div_step,
+                    source,
+                    num_objects,
+                    num_div_input,
+                    num_div_pred,
+                    int(gate_div.sum().item()) if gate_div is not None else -1,
+                    int(gate_obj.sum().item()) if gate_obj is not None else -1,
+                    int(gate_iou.sum().item()) if gate_iou is not None else -1,
+                    int(gate_all.sum().item()) if gate_all is not None else -1,
+                )
+                self._log_div_debug(scalars, msg)
         
         # Create masks for dividing and non-dividing cells
         div_mask = is_dividing  # [B] bool
@@ -191,22 +294,29 @@ class MaskDecoder(nn.Module):
 
         # Process dividing cells if any exist
         if div_mask.sum() > 0:
-            # During training with GT masks, match daughter masks to ground truth
+            # Always keep the primary mask as the mother, and select a single bud mask.
+            pred_mother_masks = masks[div_mask][:, 0:1]  # [N, 1, H, W]
+            pred_mother_ious = iou_pred[div_mask][:, 0:1]  # [N, 1]
+            pred_mother_tokens = mask_tokens_out[div_mask][:, 0:1]  # [N, 1, C]
+
             if self.training and gt_masks is not None:
-                pred_div_masks, pred_div_ious, pred_div_tokens = self._match_daughter_masks_to_gt(
+                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._match_bud_masks_to_gt(
                     gt_masks, masks, iou_pred, mask_tokens_out, div_mask
                 )
             else:
-                # For inference or when GT masks aren't provided
-                # Extract masks 1 and 2 for dividing cells and reshape
-                pred_div_masks = masks[div_mask][:, 1:3]  # [N, 2, H, W]
-                pred_div_ious = iou_pred[div_mask][:, 1:3]  # [N, 2]
-                pred_div_tokens = mask_tokens_out[div_mask][:, 1:3]  # [N, 2, C]
-                
-                # Reshape to have each mask as a separate item in batch
-                pred_div_masks = pred_div_masks.flatten(0, 1).unsqueeze(1)  # [N*2, 1, H, W]
-                pred_div_ious = pred_div_ious.flatten(0, 1).unsqueeze(1)  # [N*2, 1]
-                pred_div_tokens = pred_div_tokens.flatten(0, 1).unsqueeze(1)  # [N*2, 1, C]
+                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._select_bud_masks(
+                    masks, iou_pred, mask_tokens_out, div_mask
+                )
+
+            # Interleave mother + bud for each dividing object.
+            pred_div_masks = torch.cat([pred_mother_masks, pred_bud_masks], dim=1)
+            pred_div_ious = torch.cat([pred_mother_ious, pred_bud_ious], dim=1)
+            pred_div_tokens = torch.cat([pred_mother_tokens, pred_bud_tokens], dim=1)
+
+            # Reshape to have each mask as a separate item in batch
+            pred_div_masks = pred_div_masks.flatten(0, 1).unsqueeze(1)  # [N*2, 1, H, W]
+            pred_div_ious = pred_div_ious.flatten(0, 1).unsqueeze(1)  # [N*2, 1]
+            pred_div_tokens = pred_div_tokens.flatten(0, 1).unsqueeze(1)  # [N*2, 1, C]
 
             # Combine results from non-dividing and dividing cells
             pred_masks = torch.cat([pred_masks, pred_div_masks], dim=0)
@@ -221,7 +331,7 @@ class MaskDecoder(nn.Module):
             
             # Handle dividing cells if any exist
             if div_mask.any():
-                # For dividing cells, duplicate scores for both daughter cells
+                # For dividing cells, duplicate scores for mother + bud
                 pred_div_scores = object_score_logits[div_mask].repeat_interleave(2, dim=0)
                 # Combine scores
                 post_split_object_score_logits = torch.cat([pred_scores, pred_div_scores], dim=0)
@@ -374,64 +484,111 @@ class MaskDecoder(nn.Module):
         )
         return mask_logits_out, iou_scores_out
 
-    def _match_daughter_masks_to_gt(self, gt_masks, masks, iou_pred, mask_tokens_out, div_mask):
+    def _match_bud_masks_to_gt(self, gt_masks, masks, iou_pred, mask_tokens_out, div_mask):
         """
-        Match predicted daughter cell masks to ground truth masks by computing IoUs
-        and reordering them to maximize the match.
-        
-        For dividing cells, this ensures the predicted daughter masks are correctly
-        aligned with their corresponding ground truth masks by comparing IoUs in
-        both possible orderings and selecting the ordering with the highest total IoU.
-        
-        Args:
-            gt_masks: Ground truth masks
-            masks: Predicted masks
-            iou_pred: Predicted IoU scores
-            mask_tokens_out: Mask tokens output from transformer
-            div_mask: Boolean mask indicating which cells are dividing
-            
-        Returns:
-            Tuple of reordered masks, IoU predictions, and mask tokens
-        """
-        
-        assert self.training
-        pred_div_masks = masks[div_mask][:, 1:3]
-        pred_div_masks_sigmoid = pred_div_masks.sigmoid()  # Take masks 1 and 2
-        pred_div_ious = iou_pred[div_mask][:, 1:3]
-        pred_div_tokens = mask_tokens_out[div_mask][:, 1:3]
+        Match predicted bud masks to ground truth by selecting the best of masks 1/2.
 
-        # Daughter masks are alwaays added last
-        gts = gt_masks[-div_mask.sum()*2:].reshape(-1, 2, *gt_masks.shape[-2:])      # [N, 2, H, W]
-        # Resize GT masks to match prediction size
+        Assumes one bud per dividing object; GT buds are appended last in gt_masks.
+        """
+        assert self.training
+        pred_bud_masks = masks[div_mask][:, 1:3]  # [N, 2, H, W]
+        pred_bud_masks_sigmoid = pred_bud_masks.sigmoid()
+        pred_bud_ious = iou_pred[div_mask][:, 1:3]
+        pred_bud_tokens = mask_tokens_out[div_mask][:, 1:3]
+
+        num_div = int(div_mask.sum().item())
+        gts = gt_masks[-num_div:]  # [N, 1, H, W]
         gts = F.interpolate(
-            gts.flatten(0, 1).unsqueeze(1).float(),  # [N*2, 1, H, W]
-            size=pred_div_masks.shape[-2:],
+            gts.float(),
+            size=pred_bud_masks.shape[-2:],
             mode="bilinear",
             align_corners=False,
-        ).squeeze(1).reshape(-1, 2, *pred_div_masks.shape[-2:])  # [N, 2, h, w]
-        
-        # First ordering: pred[0] with gt[0], pred[1] with gt[1]
-        iou_00 = compute_iou(pred_div_masks_sigmoid[:,0], gts[:,0])
-        iou_11 = compute_iou(pred_div_masks_sigmoid[:,1], gts[:,1])
-        sum_iou_01 = iou_00 + iou_11
+        ).squeeze(1)  # [N, h, w]
 
-        # Swapped ordering: pred[0] with gt[1], pred[1] with gt[0]
-        iou_01 = compute_iou(pred_div_masks_sigmoid[:,0], gts[:,1])
-        iou_10 = compute_iou(pred_div_masks_sigmoid[:,1], gts[:,0])
-        sum_iou_10 = iou_01 + iou_10
+        iou_0 = compute_iou(pred_bud_masks_sigmoid[:, 0], gts)
+        iou_1 = compute_iou(pred_bud_masks_sigmoid[:, 1], gts)
+        choose_second = iou_1 > iou_0
 
-        # Choose better match
-        swap = sum_iou_10 > sum_iou_01  # [N] bool
+        if self._debug_div_log_now:
+            with torch.no_grad():
+                best_iou = torch.maximum(iou_0, iou_1)
+                scalars = {
+                    "div_debug/bud_iou0_mean": float(iou_0.mean().item()),
+                    "div_debug/bud_iou1_mean": float(iou_1.mean().item()),
+                    "div_debug/bud_best_iou_mean": float(best_iou.mean().item()),
+                    "div_debug/bud_best_iou_lt_0.1_frac": float(
+                        (best_iou < 0.1).float().mean().item()
+                    ),
+                    "div_debug/bud_choose_second_frac": float(choose_second.float().mean().item()),
+                }
+                self._log_div_debug(scalars, None)
 
-        # Create index tensor [N, 2] where each row is [0,1] or [1,0]
-        order = torch.stack([
-            torch.where(swap, torch.tensor(1, device=pred_div_masks.device), torch.tensor(0, device=pred_div_masks.device)),
-            torch.where(swap, torch.tensor(0, device=pred_div_masks.device), torch.tensor(1, device=pred_div_masks.device))
-        ], dim=1)  # [N, 2]
+        idx = choose_second.long()
+        batch_idx = torch.arange(num_div, device=pred_bud_masks.device)
+        pred_bud_masks = pred_bud_masks[batch_idx, idx].unsqueeze(1)
+        pred_bud_ious = pred_bud_ious[batch_idx, idx].unsqueeze(1)
+        pred_bud_tokens = pred_bud_tokens[batch_idx, idx].unsqueeze(1)
 
-        # Reorder predictions accordingly
-        pred_div_masks = torch.gather(pred_div_masks, dim=1, index=order.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, pred_div_masks.size(2), pred_div_masks.size(3))).flatten(1).reshape(-1, 1, *pred_div_masks.shape[-2:])
-        pred_div_ious = torch.gather(pred_div_ious, dim=1, index=order).flatten(1).reshape(-1, 1)
-        pred_div_tokens = torch.gather(pred_div_tokens, dim=1, index=order.unsqueeze(-1).expand(-1, -1, pred_div_tokens.size(2))).flatten(1).reshape(-1, 1, pred_div_tokens.shape[-1])
+        return pred_bud_masks, pred_bud_ious, pred_bud_tokens
 
-        return pred_div_masks, pred_div_ious, pred_div_tokens
+    def _select_bud_masks(self, masks, iou_pred, mask_tokens_out, div_mask):
+        """Select a single bud mask in inference by minimizing overlap with the mother mask."""
+        pred_bud_masks = masks[div_mask][:, 1:3]  # [N, 2, H, W]
+        pred_bud_ious = iou_pred[div_mask][:, 1:3]
+        pred_bud_tokens = mask_tokens_out[div_mask][:, 1:3]
+
+        mother_masks = masks[div_mask][:, 0].sigmoid()
+        bud0 = pred_bud_masks[:, 0].sigmoid()
+        bud1 = pred_bud_masks[:, 1].sigmoid()
+
+        overlap0 = compute_iou(bud0, mother_masks)
+        overlap1 = compute_iou(bud1, mother_masks)
+        choose_second = overlap1 < overlap0
+
+        idx = choose_second.long()
+        num_div = pred_bud_masks.shape[0]
+        batch_idx = torch.arange(num_div, device=pred_bud_masks.device)
+        pred_bud_masks = pred_bud_masks[batch_idx, idx].unsqueeze(1)
+        pred_bud_ious = pred_bud_ious[batch_idx, idx].unsqueeze(1)
+        pred_bud_tokens = pred_bud_tokens[batch_idx, idx].unsqueeze(1)
+
+        return pred_bud_masks, pred_bud_ious, pred_bud_tokens
+
+    @staticmethod
+    def _env_flag(name: str) -> bool:
+        value = os.environ.get(name, "").strip().lower()
+        return value in ("1", "true", "yes", "y", "on")
+
+    def _start_div_debug(self) -> bool:
+        if not self._debug_div:
+            return False
+        self._debug_div_step += 1
+        if self._debug_div_freq <= 0:
+            return True
+        return self._debug_div_step % self._debug_div_freq == 0
+
+    def _get_debug_writer(self):
+        if not self._debug_div_tb_dir or self._debug_div_rank != 0:
+            return None
+        if self._debug_div_writer is None:
+            from torch.utils.tensorboard import SummaryWriter
+
+            self._debug_div_writer = SummaryWriter(log_dir=self._debug_div_tb_dir)
+        return self._debug_div_writer
+
+    def _log_div_debug(self, scalars, message):
+        if self._debug_div_rank != 0:
+            return
+        if message:
+            logging.info(message)
+        writer = self._get_debug_writer()
+        if writer is None:
+            return
+        for key, value in scalars.items():
+            if value is None:
+                continue
+            if isinstance(value, torch.Tensor):
+                if value.numel() != 1:
+                    continue
+                value = value.item()
+            writer.add_scalar(key, value, self._debug_div_step)

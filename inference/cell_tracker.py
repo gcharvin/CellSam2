@@ -838,17 +838,6 @@ class SAM2AutomaticCellTracker:
                 (len(prev_obj_ids), 2), dtype=torch.int32
             )
 
-            prev_masks = None
-            prev_obj_ids_cache = None
-            if inference_state.get("prev_frame_idx") == frame_idx - 1:
-                prev_masks = inference_state.get("prev_masks")
-                prev_obj_ids_cache = inference_state.get("prev_obj_ids")
-
-            prev_mask_lookup = {}
-            if prev_masks is not None and prev_obj_ids_cache is not None:
-                for idx, obj_id in enumerate(prev_obj_ids_cache):
-                    prev_mask_lookup[int(obj_id.item())] = idx
-
             non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
             div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
 
@@ -867,24 +856,8 @@ class SAM2AutomaticCellTracker:
                 mask_idx0 = non_div_count + 2 * div_counter
                 mask_idx1 = mask_idx0 + 1
 
-                mother_first = True
-                prev_idx = prev_mask_lookup.get(mother_id)
-                if prev_idx is not None:
-                    prev_mask = prev_masks[prev_idx] > self.mask_threshold
-                    mask0 = save_masks[mask_idx0, 0] > self.mask_threshold
-                    mask1 = save_masks[mask_idx1, 0] > self.mask_threshold
-                    inter0 = (mask0 & prev_mask).sum()
-                    union0 = (mask0 | prev_mask).sum()
-                    inter1 = (mask1 & prev_mask).sum()
-                    union1 = (mask1 | prev_mask).sum()
-                    iou0 = inter0 / (union0 + 1e-6)
-                    iou1 = inter1 / (union1 + 1e-6)
-                    mother_first = bool(iou0 >= iou1)
-
-                if mother_first:
-                    obj_ids_for_masks.extend([mother_id, bud_id])
-                else:
-                    obj_ids_for_masks.extend([bud_id, mother_id])
+                # Mask order is [mother, bud] for dividing objects.
+                obj_ids_for_masks.extend([mother_id, bud_id])
 
             obj_ids = torch.tensor(
                 obj_ids_for_masks, device=self.device, dtype=torch.int32
