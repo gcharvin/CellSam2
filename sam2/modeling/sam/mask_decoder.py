@@ -132,6 +132,9 @@ class MaskDecoder(nn.Module):
         self._debug_div = self._env_flag("SAM2_DEBUG_DIV")
         self._debug_div_eval = self._env_flag("SAM2_DEBUG_DIV_EVAL")
         self._debug_div_freq = int(os.environ.get("SAM2_DEBUG_DIV_FREQ", "50"))
+        self._debug_div_console = self._env_flag_default(
+            "SAM2_DEBUG_DIV_CONSOLE", True
+        )
         self._debug_div_step = 0
         self._debug_div_tb_dir = os.environ.get("SAM2_DEBUG_DIV_TB_DIR")
         self._debug_div_writer = None
@@ -209,6 +212,7 @@ class MaskDecoder(nn.Module):
 
                 pred_dividing = None
                 gate_div = gate_obj = gate_iou = gate_all = None
+                gate_div_only = gate_div_obj = gate_div_iou = None
                 if (
                     self.div_obj_score_thresh is not None
                     and self.obj_score_thresh is not None
@@ -217,74 +221,106 @@ class MaskDecoder(nn.Module):
                     gate_div = div_scores > self.div_obj_score_thresh
                     gate_obj = obj_scores > self.obj_score_thresh
                     gate_iou = (iou_pair > self.pred_iou_thresh).any(1)
+                    gate_div_only = gate_div
+                    gate_div_obj = gate_div & gate_obj
+                    gate_div_iou = gate_div & gate_iou
                     gate_all = gate_div & gate_obj & gate_iou
                     pred_dividing = gate_all
 
                 num_div_pred = int(pred_dividing.sum().item()) if pred_dividing is not None else None
-                if num_div_pred is None or num_div_pred == 0:
-                    self._debug_div_log_now = False
-                else:
-                    num_div_mismatch = None
-                    if is_dividing_provided and pred_dividing is not None:
-                        num_div_mismatch = int((pred_dividing != is_dividing).sum().item())
+                num_div_mismatch = None
+                if is_dividing_provided and pred_dividing is not None:
+                    num_div_mismatch = int((pred_dividing != is_dividing).sum().item())
 
-                    scalars = {
-                        "div_debug/num_objects": float(num_objects),
-                        "div_debug/num_div_input": float(num_div_input),
-                        "div_debug/num_div_pred": float(num_div_pred)
-                        if num_div_pred is not None
-                        else None,
-                        "div_debug/num_div_mismatch": float(num_div_mismatch)
-                        if num_div_mismatch is not None
-                        else None,
-                        "div_debug/gate_div": float(gate_div.sum().item())
-                        if gate_div is not None
-                        else None,
-                        "div_debug/gate_obj": float(gate_obj.sum().item())
-                        if gate_obj is not None
-                        else None,
-                        "div_debug/gate_iou": float(gate_iou.sum().item())
-                        if gate_iou is not None
-                        else None,
-                        "div_debug/gate_all": float(gate_all.sum().item())
-                        if gate_all is not None
-                        else None,
-                        "div_debug/div_score_mean": float(div_scores.mean().item()),
-                        "div_debug/div_score_min": float(div_scores.min().item()),
-                        "div_debug/div_score_max": float(div_scores.max().item()),
-                        "div_debug/obj_score_mean": float(obj_scores.mean().item()),
-                        "div_debug/iou_max_mean": float(iou_max.mean().item()),
-                    }
+                scalars = {
+                    "div_debug/num_objects": float(num_objects),
+                    "div_debug/num_div_input": float(num_div_input),
+                    "div_debug/num_div_pred": float(num_div_pred)
+                    if num_div_pred is not None
+                    else None,
+                    "div_debug/num_div_mismatch": float(num_div_mismatch)
+                    if num_div_mismatch is not None
+                    else None,
+                    "div_debug/gate_div": float(gate_div.sum().item())
+                    if gate_div is not None
+                    else None,
+                    "div_debug/gate_obj": float(gate_obj.sum().item())
+                    if gate_obj is not None
+                    else None,
+                    "div_debug/gate_iou": float(gate_iou.sum().item())
+                    if gate_iou is not None
+                    else None,
+                    "div_debug/gate_div_only": float(gate_div_only.sum().item())
+                    if gate_div_only is not None
+                    else None,
+                    "div_debug/gate_div_obj": float(gate_div_obj.sum().item())
+                    if gate_div_obj is not None
+                    else None,
+                    "div_debug/gate_div_iou": float(gate_div_iou.sum().item())
+                    if gate_div_iou is not None
+                    else None,
+                    "div_debug/gate_all": float(gate_all.sum().item())
+                    if gate_all is not None
+                    else None,
+                    "div_debug/div_score_mean": float(div_scores.mean().item()),
+                    "div_debug/div_score_min": float(div_scores.min().item()),
+                    "div_debug/div_score_max": float(div_scores.max().item()),
+                    "div_debug/obj_score_mean": float(obj_scores.mean().item()),
+                    "div_debug/iou_max_mean": float(iou_max.mean().item()),
+                }
 
-                    if num_div_input > 0 and num_div_input < num_objects:
-                        scalars["div_debug/div_score_mean_div"] = float(
-                            div_scores[is_dividing].mean().item()
+                if num_div_input > 0 and num_div_input < num_objects:
+                    scalars["div_debug/div_score_mean_div"] = float(
+                        div_scores[is_dividing].mean().item()
+                    )
+                    scalars["div_debug/div_score_mean_non_div"] = float(
+                        div_scores[~is_dividing].mean().item()
+                    )
+
+                if is_dividing_provided and gate_all is not None:
+                    gt_div = is_dividing
+                    gt_div_count = int(gt_div.sum().item())
+                    if gt_div_count > 0:
+                        gt_gate_pass = int((gt_div & gate_all).sum().item())
+                        fn_mask = gt_div & ~gate_all
+                        scalars["div_debug/gt_gate_recall"] = (
+                            gt_gate_pass / gt_div_count
                         )
-                        scalars["div_debug/div_score_mean_non_div"] = float(
-                            div_scores[~is_dividing].mean().item()
+                        scalars["div_debug/gt_gate_pass"] = float(gt_gate_pass)
+                        scalars["div_debug/gt_gate_fn"] = float(fn_mask.sum().item())
+                        scalars["div_debug/gt_fn_fail_div"] = float(
+                            (fn_mask & ~gate_div).sum().item()
                         )
+                        scalars["div_debug/gt_fn_fail_obj"] = float(
+                            (fn_mask & ~gate_obj).sum().item()
+                        )
+                        scalars["div_debug/gt_fn_fail_iou"] = float(
+                            (fn_mask & ~gate_iou).sum().item()
+                        )
+                        if gate_div_only is not None:
+                            scalars["div_debug/gt_gate_recall_div_only"] = float(
+                                (gt_div & gate_div_only).sum().item() / gt_div_count
+                            )
+                            scalars["div_debug/gt_gate_pass_div_only"] = float(
+                                (gt_div & gate_div_only).sum().item()
+                            )
+                        if gate_div_obj is not None:
+                            scalars["div_debug/gt_gate_recall_div_obj"] = float(
+                                (gt_div & gate_div_obj).sum().item() / gt_div_count
+                            )
+                            scalars["div_debug/gt_gate_pass_div_obj"] = float(
+                                (gt_div & gate_div_obj).sum().item()
+                            )
+                        if gate_div_iou is not None:
+                            scalars["div_debug/gt_gate_recall_div_iou"] = float(
+                                (gt_div & gate_div_iou).sum().item() / gt_div_count
+                            )
+                            scalars["div_debug/gt_gate_pass_div_iou"] = float(
+                                (gt_div & gate_div_iou).sum().item()
+                            )
 
-                    if is_dividing_provided and gate_all is not None:
-                        gt_div = is_dividing
-                        gt_div_count = int(gt_div.sum().item())
-                        if gt_div_count > 0:
-                            gt_gate_pass = int((gt_div & gate_all).sum().item())
-                            fn_mask = gt_div & ~gate_all
-                            scalars["div_debug/gt_gate_recall"] = (
-                                gt_gate_pass / gt_div_count
-                            )
-                            scalars["div_debug/gt_gate_pass"] = float(gt_gate_pass)
-                            scalars["div_debug/gt_gate_fn"] = float(fn_mask.sum().item())
-                            scalars["div_debug/gt_fn_fail_div"] = float(
-                                (fn_mask & ~gate_div).sum().item()
-                            )
-                            scalars["div_debug/gt_fn_fail_obj"] = float(
-                                (fn_mask & ~gate_obj).sum().item()
-                            )
-                            scalars["div_debug/gt_fn_fail_iou"] = float(
-                                (fn_mask & ~gate_iou).sum().item()
-                            )
-
+                msg = None
+                if num_div_pred is not None and num_div_pred > 0:
                     source = "provided" if is_dividing_provided else "pred"
                     mode = "train" if self.training else "eval"
                     msg = (
@@ -302,7 +338,7 @@ class MaskDecoder(nn.Module):
                         int(gate_iou.sum().item()) if gate_iou is not None else -1,
                         int(gate_all.sum().item()) if gate_all is not None else -1,
                     )
-                    self._log_div_debug(scalars, msg)
+                self._log_div_debug(scalars, msg)
         
         # Create masks for dividing and non-dividing cells
         div_mask = is_dividing  # [B] bool
@@ -580,6 +616,13 @@ class MaskDecoder(nn.Module):
         value = os.environ.get(name, "").strip().lower()
         return value in ("1", "true", "yes", "y", "on")
 
+    @staticmethod
+    def _env_flag_default(name: str, default: bool) -> bool:
+        if name not in os.environ:
+            return default
+        value = os.environ.get(name, "").strip().lower()
+        return value in ("1", "true", "yes", "y", "on")
+
     def _start_div_debug(self) -> bool:
         if not self._debug_div:
             return False
@@ -600,7 +643,7 @@ class MaskDecoder(nn.Module):
     def _log_div_debug(self, scalars, message):
         if self._debug_div_rank != 0:
             return
-        if message:
+        if message and self._debug_div_console:
             logging.info(message)
         writer = self._get_debug_writer()
         if writer is None:
