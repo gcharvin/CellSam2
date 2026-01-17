@@ -39,6 +39,9 @@ class MaskDecoder(nn.Module):
         pred_iou_thresh: float = None,
         obj_score_thresh: float = None,
         div_obj_score_thresh: float = None,
+        div_gate_warmup_steps: int = 0,
+        div_gate_ramp_steps: int = 0,
+        div_gate_max_prob: float = 1.0,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -129,6 +132,10 @@ class MaskDecoder(nn.Module):
         self.pred_iou_thresh = pred_iou_thresh
         self.obj_score_thresh = obj_score_thresh
         self.div_obj_score_thresh = div_obj_score_thresh
+        self.div_gate_warmup_steps = max(0, int(div_gate_warmup_steps))
+        self.div_gate_ramp_steps = max(0, int(div_gate_ramp_steps))
+        self.div_gate_max_prob = float(max(0.0, min(1.0, div_gate_max_prob)))
+        self._div_gate_step = 0
         self._debug_div = self._env_flag("SAM2_DEBUG_DIV")
         self._debug_div_eval = self._env_flag("SAM2_DEBUG_DIV_EVAL")
         self._debug_div_freq = int(os.environ.get("SAM2_DEBUG_DIV_FREQ", "50"))
@@ -140,6 +147,33 @@ class MaskDecoder(nn.Module):
         self._debug_div_writer = None
         self._debug_div_rank = int(os.environ.get("RANK", "0"))
         self._debug_div_log_now = False
+
+    def _compute_div_gate(self, div_scores, obj_scores, iou_pred):
+        if (
+            self.div_obj_score_thresh is None
+            or self.obj_score_thresh is None
+            or self.pred_iou_thresh is None
+        ):
+            return None
+        iou_pair = iou_pred[:, 1:3]
+        gate_div = div_scores > self.div_obj_score_thresh
+        gate_obj = obj_scores > self.obj_score_thresh
+        gate_iou = (iou_pair > self.pred_iou_thresh).any(1)
+        return gate_div & gate_obj & gate_iou
+
+    def _div_gate_prob(self) -> float:
+        if self.div_gate_warmup_steps <= 0 and self.div_gate_ramp_steps <= 0:
+            return 0.0
+        self._div_gate_step += 1
+        if self._div_gate_step <= self.div_gate_warmup_steps:
+            return 0.0
+        if self.div_gate_ramp_steps <= 0:
+            return self.div_gate_max_prob
+        progress = (
+            (self._div_gate_step - self.div_gate_warmup_steps)
+            / float(self.div_gate_ramp_steps)
+        )
+        return self.div_gate_max_prob * min(1.0, max(0.0, progress))
 
     def forward(
         self,
@@ -184,22 +218,43 @@ class MaskDecoder(nn.Module):
         )
 
         is_dividing_provided = is_dividing is not None
+        is_dividing_gt = None
+        gate_prob = None
         debug_log_now = self._start_div_debug() if (self.training or self._debug_div_eval) else False
         self._debug_div_log_now = debug_log_now
 
         if is_dividing is not None and is_dividing.device != div_score_logits.device:
             is_dividing = is_dividing.to(div_score_logits.device)
 
-        # Determine which cells are dividing
         if is_dividing is None:
+            # Determine which cells are dividing during inference.
             is_dividing = (
                 (div_score_logits[:, 0] > self.div_obj_score_thresh)
                 & (object_score_logits[:, 0] > self.obj_score_thresh)
                 & (iou_pred[:, 1:3] > self.pred_iou_thresh).any(1)
             )
-        
-        # Ensure is_dividing is a flat boolean tensor
-        is_dividing = is_dividing.view(-1)
+            is_dividing = is_dividing.view(-1)
+        else:
+            # Use GT divisions for training, optionally mixing in the gate over time.
+            is_dividing = is_dividing.view(-1)
+            is_dividing_gt = is_dividing
+            if self.training:
+                gate_prob = self._div_gate_prob()
+                if gate_prob > 0.0:
+                    gate_all = self._compute_div_gate(
+                        div_score_logits[:, 0],
+                        object_score_logits[:, 0],
+                        iou_pred,
+                    )
+                    if gate_all is not None:
+                        if gate_prob >= 1.0:
+                            is_dividing = gate_all
+                        else:
+                            rand = torch.rand_like(is_dividing_gt.float())
+                            use_gate = is_dividing_gt & (rand < gate_prob)
+                            is_dividing = torch.where(
+                                use_gate, gate_all, is_dividing_gt
+                            )
 
         if debug_log_now:
             with torch.no_grad():
@@ -208,7 +263,9 @@ class MaskDecoder(nn.Module):
                 iou_pair = iou_pred[:, 1:3].detach()
                 iou_max = iou_pair.max(1).values
                 num_objects = is_dividing.numel()
-                num_div_input = int(is_dividing.sum().item())
+                gt_div = is_dividing_gt if is_dividing_gt is not None else is_dividing
+                num_div_input = int(gt_div.sum().item())
+                num_div_used = int(is_dividing.sum().item())
 
                 pred_dividing = None
                 gate_div = gate_obj = gate_iou = gate_all = None
@@ -235,6 +292,7 @@ class MaskDecoder(nn.Module):
                 scalars = {
                     "div_debug/num_objects": float(num_objects),
                     "div_debug/num_div_input": float(num_div_input),
+                    "div_debug/num_div_used": float(num_div_used),
                     "div_debug/num_div_pred": float(num_div_pred)
                     if num_div_pred is not None
                     else None,
@@ -267,18 +325,20 @@ class MaskDecoder(nn.Module):
                     "div_debug/div_score_max": float(div_scores.max().item()),
                     "div_debug/obj_score_mean": float(obj_scores.mean().item()),
                     "div_debug/iou_max_mean": float(iou_max.mean().item()),
+                    "div_debug/gate_prob": float(gate_prob)
+                    if gate_prob is not None
+                    else None,
                 }
 
                 if num_div_input > 0 and num_div_input < num_objects:
                     scalars["div_debug/div_score_mean_div"] = float(
-                        div_scores[is_dividing].mean().item()
+                        div_scores[gt_div].mean().item()
                     )
                     scalars["div_debug/div_score_mean_non_div"] = float(
-                        div_scores[~is_dividing].mean().item()
+                        div_scores[~gt_div].mean().item()
                     )
 
                 if is_dividing_provided and gate_all is not None:
-                    gt_div = is_dividing
                     gt_div_count = int(gt_div.sum().item())
                     if gt_div_count > 0:
                         gt_gate_pass = int((gt_div & gate_all).sum().item())
