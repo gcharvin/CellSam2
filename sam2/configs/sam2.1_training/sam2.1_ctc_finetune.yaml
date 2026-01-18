@@ -228,11 +228,6 @@ trainer:
     pred_iou_thresh: 0.7
     obj_score_thresh: 0.5
     div_obj_score_thresh: 0.1
-    sam_mask_decoder_extra_args:
-      div_gate_warmup_steps: 2000
-      div_gate_ramp_steps: 8000
-      div_gate_max_prob: 1.0
-
     ####### Training specific params #######
     # box/point input and corrections
     prob_to_use_pt_input_for_train: 1
@@ -250,8 +245,8 @@ trainer:
     num_correction_pt_per_frame: 5
     use_act_ckpt_iterative_pt_sampling: false
     # Add a positive point in a ring around the mother mask for division events.
-    div_ring_radius: 4
-    div_ring_point_prob: 1.0
+    div_ring_radius: 0
+    div_ring_point_prob: 0.0
     
 
     
