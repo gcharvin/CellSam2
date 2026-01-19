@@ -744,6 +744,52 @@ class SAM2AutomaticCellTracker:
                     )
 
                 # Get max scores across all masks for each pixel
+        if obj_ids is not None and is_dividing is not None and is_dividing.any():
+            prev_masks = inference_state.get("prev_masks")
+            prev_obj_ids = inference_state.get("prev_obj_ids")
+            if prev_masks is not None and prev_obj_ids is not None:
+                prev_masks = prev_masks.to(high_res_masks.device)
+                prev_obj_ids = prev_obj_ids.to(high_res_masks.device)
+                non_div_count = int((~is_dividing).sum().item())
+                div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
+
+                def swap_mask_pair(idx0, idx1):
+                    high_res_masks[[idx0, idx1]] = high_res_masks[[idx1, idx0]]
+                    low_res_masks[[idx0, idx1]] = low_res_masks[[idx1, idx0]]
+                    save_masks[[idx0, idx1]] = save_masks[[idx1, idx0]]
+                    ious[[idx0, idx1]] = ious[[idx1, idx0]]
+                    obj_ptr[[idx0, idx1]] = obj_ptr[[idx1, idx0]]
+                    for key, value in object_score_logits_dict.items():
+                        if value.shape[0] == high_res_masks.shape[0]:
+                            object_score_logits_dict[key][[idx0, idx1]] = value[
+                                [idx1, idx0]
+                            ]
+
+                for div_counter, obj_idx in enumerate(div_indices.tolist()):
+                    mother_id = obj_ids[obj_idx]
+                    prev_idx = torch.nonzero(prev_obj_ids == mother_id, as_tuple=True)[
+                        0
+                    ]
+                    if prev_idx.numel() == 0:
+                        continue
+                    prev_mask = prev_masks[prev_idx[0], 0] > self.mask_threshold
+                    mask_idx0 = non_div_count + 2 * div_counter
+                    mask_idx1 = mask_idx0 + 1
+                    cand0 = save_masks[mask_idx0, 0] > self.mask_threshold
+                    cand1 = save_masks[mask_idx1, 0] > self.mask_threshold
+
+                    inter0 = (cand0 & prev_mask).sum()
+                    union0 = (cand0 | prev_mask).sum()
+                    iou0 = inter0.float() / union0.float() if union0 > 0 else 0.0
+
+                    inter1 = (cand1 & prev_mask).sum()
+                    union1 = (cand1 | prev_mask).sum()
+                    iou1 = inter1.float() / union1.float() if union1 > 0 else 0.0
+
+                    # Swap if the second mask is more consistent with the previous mother.
+                    if iou1 > iou0:
+                        swap_mask_pair(mask_idx0, mask_idx1)
+
         argmax_scores = torch.max(save_masks[:, 0], dim=0)[1]  # shape: (H, W)
         # Count pixels for each mask index (excluding background)
         valid_mask = save_masks[:, 0].sum(0) > 0
