@@ -231,8 +231,8 @@ trainer:
     div_obj_score_thresh: 0.1
     # Reintroduce the division gate during training to reduce train/inference gap.
     sam_mask_decoder_extra_args:
-      div_gate_warmup_steps: 3600
-      div_gate_ramp_steps: 11000
+      div_gate_warmup_steps: 100
+      div_gate_ramp_steps: 0
       div_gate_max_prob: 1.0
     ####### Training specific params #######
     # box/point input and corrections

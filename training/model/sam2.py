@@ -516,6 +516,7 @@ class SAM2Train(SAM2Base):
             object_score_logits_dict,
             div_score_logits,
             is_dividing,
+            div_gate_weight,
         ) = sam_outputs
 
         # Store prediction results
@@ -527,6 +528,7 @@ class SAM2Train(SAM2Base):
             point_inputs,
             object_score_logits_dict,
             div_score_logits,
+            div_gate_weight,
         )
 
         current_out["heatmap_predictions"] = self.get_heatmap_predictions(current_vision_feats, feat_sizes)[0,0] # assume batch size is 1
@@ -595,6 +597,7 @@ class SAM2Train(SAM2Base):
         point_inputs,
         object_score_logits_dict,
         div_score_logits,
+        div_gate_weight,
     ):
         
         """Store prediction results in the output dictionary."""
@@ -604,6 +607,7 @@ class SAM2Train(SAM2Base):
         current_out["multistep_point_inputs"] = [point_inputs]
         current_out["multistep_object_score_logits"] = [object_score_logits_dict["pre_div"]]
         current_out["multistep_div_score_logits"] = [div_score_logits]
+        current_out["multistep_div_gate_weight"] = [div_gate_weight]
         current_out["post_split_object_score_logits"] = [object_score_logits_dict["post_div"]]
         
     def _handle_cell_tracking(
@@ -764,6 +768,11 @@ class SAM2Train(SAM2Base):
         Returns:
             Updated current_out dictionary with iterative correction results
         """
+        if gt_masks is not None and keep_tokens_mask.numel() != gt_masks.shape[0]:
+            raise ValueError(
+                "keep_tokens_mask length (%s) does not match gt_masks (%s)."
+                % (keep_tokens_mask.numel(), gt_masks.shape[0])
+            )
         # Filter inputs based on keep_tokens_mask
         gt_masks = gt_masks[keep_tokens_mask]
         high_res_features = [feat[keep_tokens_mask] for feat in high_res_features]
@@ -833,6 +842,7 @@ class SAM2Train(SAM2Base):
                 object_score_logits_dict,
                 div_score_logits,
                 is_dividing,
+                div_gate_weight,
             ) = sam_outputs
             
             # Store results for this correction step
@@ -842,6 +852,7 @@ class SAM2Train(SAM2Base):
             current_out["multistep_point_inputs"].append(point_inputs)
             current_out["multistep_object_score_logits"].append(object_score_logits_dict["pre_div"])
             current_out["multistep_div_score_logits"].append(div_score_logits)
+            current_out["multistep_div_gate_weight"].append(div_gate_weight)
             current_out["post_split_object_score_logits"].append(object_score_logits_dict["post_div"])
             current_out["multistep_is_point_used"].append(keep_tokens_mask)
             

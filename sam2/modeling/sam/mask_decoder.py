@@ -187,7 +187,16 @@ class MaskDecoder(nn.Module):
         high_res_features: Optional[List[torch.Tensor]] = None,
         is_dividing: Optional[torch.Tensor] = None,
         gt_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+    ]:
         """
         Predict masks given image and prompt embeddings.
 
@@ -209,6 +218,7 @@ class MaskDecoder(nn.Module):
           torch.Tensor: batched division score logits
           torch.Tensor: batched post-split object score logits
           torch.Tensor: batched is_dividing
+          Optional[torch.Tensor]: per-object division gate weights for loss
         """
         masks, iou_pred, mask_tokens_out, object_score_logits, div_score_logits = self.predict_masks(
             image_embeddings=image_embeddings,
@@ -222,6 +232,7 @@ class MaskDecoder(nn.Module):
         is_dividing_provided = is_dividing is not None
         is_dividing_gt = None
         gate_prob = None
+        div_gate_weight = None
         debug_log_now = self._start_div_debug() if (self.training or self._debug_div_eval) else False
         self._debug_div_log_now = debug_log_now
 
@@ -237,11 +248,10 @@ class MaskDecoder(nn.Module):
             )
             is_dividing = is_dividing.view(-1)
         else:
-            # Use GT divisions for training, optionally mixing in the gate over time.
+            # Use GT divisions for training; only use the gate to weight losses.
             is_dividing = is_dividing.view(-1)
             is_dividing_gt = is_dividing
             if self.training:
-                # Gradually reintroduce the gate to avoid starving the division branch.
                 gate_prob = self._div_gate_prob()
                 if gate_prob > 0.0:
                     gate_all = self._compute_div_gate(
@@ -250,14 +260,11 @@ class MaskDecoder(nn.Module):
                         iou_pred,
                     )
                     if gate_all is not None:
-                        if gate_prob >= 1.0:
-                            is_dividing = gate_all
-                        else:
-                            rand = torch.rand_like(is_dividing_gt.float())
-                            use_gate = is_dividing_gt & (rand < gate_prob)
-                            is_dividing = torch.where(
-                                use_gate, gate_all, is_dividing_gt
-                            )
+                        div_gate_weight = (1.0 - gate_prob) + gate_prob * gate_all.float()
+            if div_gate_weight is None:
+                div_gate_weight = torch.ones_like(
+                    is_dividing_gt, dtype=div_score_logits.dtype
+                )
 
         if debug_log_now:
             with torch.no_grad():
@@ -464,7 +471,15 @@ class MaskDecoder(nn.Module):
         object_score_logits_dict = {"pre_div" : object_score_logits, "post_div" : post_split_object_score_logits}
 
         # Return all outputs
-        return pred_masks, pred_ious, pred_tokens, object_score_logits_dict, div_score_logits, is_dividing
+        return (
+            pred_masks,
+            pred_ious,
+            pred_tokens,
+            object_score_logits_dict,
+            div_score_logits,
+            is_dividing,
+            div_gate_weight,
+        )
 
     def predict_masks(
         self,

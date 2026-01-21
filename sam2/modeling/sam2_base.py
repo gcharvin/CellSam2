@@ -323,6 +323,7 @@ class SAM2Base(torch.nn.Module):
         - div_score_logits: [B, 1] shape, the cell division score logits for the output mask.
         - post_split_object_score_logits: Score logits for objects after division.
         - is_dividing: Tensor indicating which cells are dividing pre division.
+        - div_gate_weight: Optional per-object gate weights for loss.
         """
         B = backbone_features.size(0)
         device = backbone_features.device
@@ -375,6 +376,7 @@ class SAM2Base(torch.nn.Module):
             object_score_logits_dict,
             div_score_logits,
             is_dividing,
+            div_gate_weight,
         ) = self.sam_mask_decoder(
             image_embeddings=backbone_features,
             image_pe=self.sam_prompt_encoder.get_dense_pe(),
@@ -438,6 +440,7 @@ class SAM2Base(torch.nn.Module):
             object_score_logits_dict,
             div_score_logits,
             is_dividing,
+            div_gate_weight,
         )
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
@@ -465,7 +468,7 @@ class SAM2Base(torch.nn.Module):
             )
         else:
             # produce an object pointer using the SAM decoder from the mask input
-            _, _, _, _, _, obj_ptr, _ = self._forward_sam_heads(
+            _, _, _, obj_ptr, _, _, _, _ = self._forward_sam_heads(
                 backbone_features=backbone_features,
                 mask_inputs=self.mask_downsample(mask_inputs_float),
                 high_res_features=high_res_features,
@@ -482,14 +485,27 @@ class SAM2Base(torch.nn.Module):
                 obj_ptr = lambda_is_obj_appearing * obj_ptr
             obj_ptr = obj_ptr + (1 - lambda_is_obj_appearing) * self.no_obj_ptr
 
+        object_score_logits_dict = {
+            "pre_div": object_score_logits,
+            "post_div": object_score_logits,
+        }
+        div_score_logits = torch.zeros_like(object_score_logits)
+        is_dividing = torch.zeros(
+            object_score_logits.shape[0],
+            device=object_score_logits.device,
+            dtype=torch.bool,
+        )
+        div_gate_weight = None
+
         return (
-            low_res_masks,
-            high_res_masks,
             ious,
             low_res_masks,
             high_res_masks,
             obj_ptr,
-            object_score_logits,
+            object_score_logits_dict,
+            div_score_logits,
+            is_dividing,
+            div_gate_weight,
         )
 
     def forward_image(self, img_batch: torch.Tensor):
@@ -884,13 +900,15 @@ class SAM2Base(torch.nn.Module):
 
         (
             _,
-            _,
-            _,
             low_res_masks,
             high_res_masks,
             obj_ptr,
-            object_score_logits,
+            object_score_logits_dict,
+            _,
+            _,
+            _,
         ) = sam_outputs
+        object_score_logits = object_score_logits_dict["post_div"]
 
         current_out["pred_masks"] = low_res_masks
         current_out["pred_masks_high_res"] = high_res_masks

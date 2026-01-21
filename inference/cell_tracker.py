@@ -713,6 +713,7 @@ class SAM2AutomaticCellTracker:
             object_score_logits_dict,
             div_score_logits,
             is_dividing,
+            _,
         ) = sam_outputs
 
         #
