@@ -554,7 +554,7 @@ class SAM2Train(SAM2Base):
                     keep_tokens_mask,
                 )
             else:
-                logging.warning(
+                logging.debug(
                     "Skipping correction points at frame %s due to division.",
                     frame_idx,
                 )
