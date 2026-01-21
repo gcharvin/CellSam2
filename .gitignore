@@ -1,4 +1,5 @@
 .vscode/
+# Generated outputs and logs are intentionally kept out of version control.
 results/*
 sam2_logs/*
 debug/*

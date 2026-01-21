@@ -78,6 +78,7 @@ class SAM2AutomaticCellTracker:
         self.div_obj_score_thresh = div_obj_score_thresh
         self.segment = segment
         self.use_heatmap = use_heatmap
+        # Bud masks can be small in the asymmetric setting, so keep a low area cutoff.
         self.min_mask_area = min_mask_area
 
         self._transforms = SAM2Transforms(
@@ -716,6 +717,7 @@ class SAM2AutomaticCellTracker:
 
         #
         save_masks = torch.zeros_like(high_res_masks)
+        # Track division pairs whose mask order is swapped to preserve mother continuity.
         swapped_div_indices = set()
 
         # Keep only largest connected component for each mask
@@ -746,6 +748,7 @@ class SAM2AutomaticCellTracker:
 
                 # Get max scores across all masks for each pixel
         if obj_ids is not None and is_dividing is not None and is_dividing.any():
+            # Swap division masks so the "mother" stays temporally consistent with its prior mask.
             prev_masks = inference_state.get("prev_masks")
             prev_obj_ids = inference_state.get("prev_obj_ids")
             if prev_masks is not None and prev_obj_ids is not None:
@@ -896,6 +899,7 @@ class SAM2AutomaticCellTracker:
             non_div_count = len(non_div_indices)
             for div_counter, idx in enumerate(div_indices.tolist()):
                 mother_id = int(obj_ids[idx].item())
+                # Asymmetric division: keep the mother ID and mint a new bud ID.
                 bud_id = inference_state["max_obj_id"] + 1 + div_counter
                 bud_ids.append(bud_id)
                 daughter_ids_list[idx, 0] = bud_id
@@ -938,7 +942,7 @@ class SAM2AutomaticCellTracker:
                 len(obj_ids), device=self.device, dtype=torch.int32
             )
 
-            # Update parent IDs for buds that survived NMS, preserve mother IDs.
+            # Update parent IDs for buds that survived NMS, preserving mother IDs in asym mode.
             for div_idx, mother_id in enumerate(mother_ids.tolist()):
                 mother_id = int(mother_id)
                 bud_id = bud_ids[div_idx]
@@ -948,7 +952,7 @@ class SAM2AutomaticCellTracker:
                 if bud_present and mother_present:
                     parent_ids[obj_ids == bud_id] = mother_id
                 elif bud_present and not mother_present:
-                    # If mother was dropped but bud survived, keep the mother ID.
+                    # If mother was dropped but bud survived, keep the mother ID to avoid ID churn.
                     obj_ids[obj_ids == bud_id] = mother_id
                     daughter_ids_list[div_indices[div_idx], 0] = 0
                 else:
@@ -1079,6 +1083,7 @@ class SAM2AutomaticCellTracker:
         cell_ids_track_mask = np.unique(track_mask)
         cell_ids_track_mask = cell_ids_track_mask[cell_ids_track_mask != 0]
 
+        # Use obj_ids from inference state to map parent IDs even if track_mask is filtered.
         cell_ids = inference_state["obj_ids"][frame_idx].cpu().numpy()
 
         if sorted(cell_ids_track_mask) != sorted(cell_ids):
@@ -1104,6 +1109,7 @@ class SAM2AutomaticCellTracker:
         if not self.segment:
             parent_ids = inference_state["parent_ids"][frame_idx].cpu().numpy()
             res_track = inference_state["res_track"]
+            # Build a safe lookup so missing IDs don't crash asymmetric lineage output.
             parent_lookup = {
                 int(cell_id): int(parent_id)
                 for cell_id, parent_id in zip(cell_ids, parent_ids, strict=False)
@@ -1153,6 +1159,7 @@ class SAM2AutomaticCellTracker:
             ),
             dtype=np.uint8,
         )
+        # Keep a persistent mother->bud link overlay for asymmetric lineage visualization.
         parent_map = {}
         if not self.segment:
             res_track = inference_state.get("res_track")

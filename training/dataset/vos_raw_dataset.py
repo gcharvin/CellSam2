@@ -66,6 +66,7 @@ class CTCRawDataset(VOSRawDataset):
         self.num_frames = num_frames
         self.truncate_video = truncate_video
         self.sample_rate = sample_rate
+        # Oversample clips that contain a division start to counter class imbalance.
         self.division_oversample_factor = max(1, int(division_oversample_factor))
 
         # Read the subset defined in file_list_txt
@@ -104,6 +105,7 @@ class CTCRawDataset(VOSRawDataset):
                 man_track = np.loadtxt(track_path, dtype=np.int16)
                 if man_track.ndim == 1:
                     man_track = man_track.reshape(1, -1)
+                # Use man_track start frames to bias sampling toward division events.
                 div_start_frames = set(
                     man_track[man_track[:, 3] > 0, 1].astype(int).tolist()
                 )
@@ -117,6 +119,7 @@ class CTCRawDataset(VOSRawDataset):
                     self.division_oversample_factor > 1
                     and any(frame_has_div[i : i + self.num_frames])
                 ):
+                    # Duplicate indices so bud/division clips appear more often in training.
                     for _ in range(self.division_oversample_factor - 1):
                         self.frame_index.append((video_name, i))
 

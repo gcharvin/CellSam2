@@ -97,6 +97,7 @@ class SAM2Train(SAM2Base):
         self.num_correction_pt_per_frame = num_correction_pt_per_frame
         self.pt_sampling_for_eval = pt_sampling_for_eval
         self.prob_to_sample_from_gt_for_train = prob_to_sample_from_gt_for_train
+        # Optional ring prompt to bias dividing cells toward the bud boundary.
         self.div_ring_radius = max(0, int(div_ring_radius))
         self.div_ring_point_prob = float(max(0.0, min(1.0, div_ring_point_prob)))
         # A random number generator with a fixed initial seed across GPUs
@@ -119,6 +120,7 @@ class SAM2Train(SAM2Base):
         return previous_stages_out
 
     def _compute_ring_masks(self, masks: torch.Tensor, radius: int) -> torch.Tensor:
+        # Build a thin ring around the mother mask to surface budding context.
         if radius <= 0:
             return torch.zeros_like(masks, dtype=torch.bool)
         masks_bool = masks.bool()
@@ -131,6 +133,7 @@ class SAM2Train(SAM2Base):
     def _sample_ring_points(
         self, masks: torch.Tensor, div_flags: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Sample a positive point from the ring only for dividing objects.
         ring_masks = self._compute_ring_masks(masks, self.div_ring_radius)
         div_flags = div_flags.to(masks.device)
         bsz = masks.shape[0]

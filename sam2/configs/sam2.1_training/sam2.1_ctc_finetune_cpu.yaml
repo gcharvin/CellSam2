@@ -227,6 +227,7 @@ trainer:
 
     pred_iou_thresh: 0.7
     obj_score_thresh: 0.5
+    # Looser division logit gate to reduce FN in asym/budding.
     div_obj_score_thresh: 0.1
     ####### Training specific params #######
     # box/point input and corrections
@@ -267,6 +268,7 @@ trainer:
             train_dir: ${dataset.data_dir}/train/CTC
             num_frames: ${scratch.num_frames}
             file_list_txt: ${dataset.file_list_txt}  # optional
+            # Oversample clips that contain a division start frame.
             division_oversample_factor: 3
           sampler:
             _target_: training.dataset.vos_sampler.FrameIndexSampler
@@ -367,6 +369,7 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 1
+        # Emphasize division supervision relative to other losses.
         loss_div: 6
         loss_heatmap: 1
       supervise_all_iou: true

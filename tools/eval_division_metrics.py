@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 from training.utils.checkpoint_utils import load_state_dict_into_model
 from training.utils.train_utils import register_omegaconf_resolvers
 
+# Offline evaluator for division head metrics on a CTC split.
 
 def average_precision(y_true, y_score):
     if y_true.size == 0:

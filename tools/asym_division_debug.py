@@ -9,6 +9,7 @@ from sam2.utils.misc import read_image
 from training.dataset.vos_raw_dataset import CTCRawDataset
 from training.dataset.vos_segment_loader import CTCSegmentLoader
 
+# Utility to audit asymmetric lineage (mother/bud) in CTC man_track files.
 
 def _load_man_track(path: Path):
     if not path.exists():

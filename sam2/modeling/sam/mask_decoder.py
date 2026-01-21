@@ -132,10 +132,12 @@ class MaskDecoder(nn.Module):
         self.pred_iou_thresh = pred_iou_thresh
         self.obj_score_thresh = obj_score_thresh
         self.div_obj_score_thresh = div_obj_score_thresh
+        # Warm up the division gate so early training still learns from GT divisions.
         self.div_gate_warmup_steps = max(0, int(div_gate_warmup_steps))
         self.div_gate_ramp_steps = max(0, int(div_gate_ramp_steps))
         self.div_gate_max_prob = float(max(0.0, min(1.0, div_gate_max_prob)))
         self._div_gate_step = 0
+        # Optional division-debug instrumentation (console/TensorBoard).
         self._debug_div = self._env_flag("SAM2_DEBUG_DIV")
         self._debug_div_eval = self._env_flag("SAM2_DEBUG_DIV_EVAL")
         self._debug_div_freq = int(os.environ.get("SAM2_DEBUG_DIV_FREQ", "50"))
@@ -227,7 +229,7 @@ class MaskDecoder(nn.Module):
             is_dividing = is_dividing.to(div_score_logits.device)
 
         if is_dividing is None:
-            # Determine which cells are dividing during inference.
+            # Inference gate: treat a division only when div/obj/IoU heads all agree.
             is_dividing = (
                 (div_score_logits[:, 0] > self.div_obj_score_thresh)
                 & (object_score_logits[:, 0] > self.obj_score_thresh)
@@ -239,6 +241,7 @@ class MaskDecoder(nn.Module):
             is_dividing = is_dividing.view(-1)
             is_dividing_gt = is_dividing
             if self.training:
+                # Gradually reintroduce the gate to avoid starving the division branch.
                 gate_prob = self._div_gate_prob()
                 if gate_prob > 0.0:
                     gate_all = self._compute_div_gate(
@@ -411,16 +414,18 @@ class MaskDecoder(nn.Module):
 
         # Process dividing cells if any exist
         if div_mask.sum() > 0:
-            # Always keep the primary mask as the mother, and select a single bud mask.
+            # Asymmetric division: keep mother mask, choose a single bud candidate.
             pred_mother_masks = masks[div_mask][:, 0:1]  # [N, 1, H, W]
             pred_mother_ious = iou_pred[div_mask][:, 0:1]  # [N, 1]
             pred_mother_tokens = mask_tokens_out[div_mask][:, 0:1]  # [N, 1, C]
 
             if self.training and gt_masks is not None:
+                # Use GT to select the bud candidate during training.
                 pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._match_bud_masks_to_gt(
                     gt_masks, masks, iou_pred, mask_tokens_out, div_mask
                 )
             else:
+                # In inference, favor the bud with minimal overlap against the mother.
                 pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._select_bud_masks(
                     masks, iou_pred, mask_tokens_out, div_mask
                 )

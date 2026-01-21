@@ -21,6 +21,7 @@ from sam2.build_sam import build_sam2
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Cell tracking with SAM2")
+    # Defaults are relaxed to reduce FN divisions in asym/budding inference.
     parser.add_argument(
         "--video_path",
         type=str,
