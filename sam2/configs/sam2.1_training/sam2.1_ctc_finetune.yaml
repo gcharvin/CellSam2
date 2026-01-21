@@ -230,9 +230,10 @@ trainer:
     # Looser division logit gate to reduce FN in asym/budding.
     div_obj_score_thresh: 0.1
     # Reintroduce the division gate during training to reduce train/inference gap.
-    div_gate_warmup_steps: 3600
-    div_gate_ramp_steps: 11000
-    div_gate_max_prob: 1.0
+    sam_mask_decoder_extra_args:
+      div_gate_warmup_steps: 3600
+      div_gate_ramp_steps: 11000
+      div_gate_max_prob: 1.0
     ####### Training specific params #######
     # box/point input and corrections
     prob_to_use_pt_input_for_train: 1
