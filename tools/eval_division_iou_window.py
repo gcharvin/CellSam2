@@ -92,8 +92,8 @@ def match_predictions_to_gt(
     fp = 0
 
     for pred_parent_id, pred_frame in pred_events:
-        gt_mask_path = gt_mask_dir / f\"{gt_mask_prefix}{pred_frame:03d}.tif\"
-        pred_mask_path = pred_mask_dir / f\"mask{pred_frame:03d}.tif\"
+        gt_mask_path = gt_mask_dir / f"{gt_mask_prefix}{pred_frame:03d}.tif"
+        pred_mask_path = pred_mask_dir / f"mask{pred_frame:03d}.tif"
         gt_mask = load_mask(gt_mask_path)
         pred_mask = load_mask(pred_mask_path)
         gt_mother = best_iou_label(gt_mask, pred_mask, pred_parent_id, iou_thresh)
@@ -126,40 +126,40 @@ def match_predictions_to_gt(
     recall = tp / (tp + fn + 1e-12)
     f1 = 2 * precision * recall / (precision + recall + 1e-12)
     return {
-        \"tp\": tp,
-        \"fp\": fp,
-        \"fn\": fn,
-        \"precision\": precision,
-        \"recall\": recall,
-        \"f1\": f1,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description=\"Evaluate division events with IoU-based ID matching and time window.\"
+        description="Evaluate division events with IoU-based ID matching and time window."
     )
-    parser.add_argument(\"--gt-root\", required=True)
-    parser.add_argument(\"--pred-root\", required=True)
-    parser.add_argument(\"--videos\", default=\"12,13,14\")
-    parser.add_argument(\"--window\", type=int, default=3)
-    parser.add_argument(\"--iou-thresh\", type=float, default=0.5)
-    parser.add_argument(\"--gt-mask-prefix\", default=\"man_track\")
-    parser.add_argument(\"--save-json\", default=\"\")
+    parser.add_argument("--gt-root", required=True)
+    parser.add_argument("--pred-root", required=True)
+    parser.add_argument("--videos", default="12,13,14")
+    parser.add_argument("--window", type=int, default=3)
+    parser.add_argument("--iou-thresh", type=float, default=0.5)
+    parser.add_argument("--gt-mask-prefix", default="man_track")
+    parser.add_argument("--save-json", default="")
     args = parser.parse_args()
 
     gt_root = Path(args.gt_root)
     pred_root = Path(args.pred_root)
-    video_ids = [v.strip() for v in args.videos.split(\",\") if v.strip()]
+    video_ids = [v.strip() for v in args.videos.split(",") if v.strip()]
 
     results = {}
-    total = {\"tp\": 0, \"fp\": 0, \"fn\": 0}
+    total = {"tp": 0, "fp": 0, "fn": 0}
 
     for vid in video_ids:
-        gt_dir = gt_root / f\"{vid}_GT\" / \"TRA\"
+        gt_dir = gt_root / f"{vid}_GT" / "TRA"
         pred_dir = pred_root / vid
-        gt_events = load_events_from_man_track(gt_dir / \"man_track.txt\")
-        pred_events = load_events_from_res_track(pred_dir / \"res_track.txt\")
+        gt_events = load_events_from_man_track(gt_dir / "man_track.txt")
+        pred_events = load_events_from_res_track(pred_dir / "res_track.txt")
         metrics = match_predictions_to_gt(
             gt_events,
             pred_events,
@@ -170,20 +170,20 @@ def main():
             args.iou_thresh,
         )
         results[vid] = metrics
-        total[\"tp\"] += metrics[\"tp\"]
-        total[\"fp\"] += metrics[\"fp\"]
-        total[\"fn\"] += metrics[\"fn\"]
+        total["tp"] += metrics["tp"]
+        total["fp"] += metrics["fp"]
+        total["fn"] += metrics["fn"]
 
-    precision = total[\"tp\"] / (total[\"tp\"] + total[\"fp\"] + 1e-12)
-    recall = total[\"tp\"] / (total[\"tp\"] + total[\"fn\"] + 1e-12)
+    precision = total["tp"] / (total["tp"] + total["fp"] + 1e-12)
+    recall = total["tp"] / (total["tp"] + total["fn"] + 1e-12)
     f1 = 2 * precision * recall / (precision + recall + 1e-12)
-    results[\"overall\"] = {
-        \"tp\": total[\"tp\"],
-        \"fp\": total[\"fp\"],
-        \"fn\": total[\"fn\"],
-        \"precision\": precision,
-        \"recall\": recall,
-        \"f1\": f1,
+    results["overall"] = {
+        "tp": total["tp"],
+        "fp": total["fp"],
+        "fn": total["fn"],
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
     }
 
     print(json.dumps(results, indent=2))
@@ -193,5 +193,5 @@ def main():
         out_path.write_text(json.dumps(results, indent=2))
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main()
