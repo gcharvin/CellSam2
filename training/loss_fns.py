@@ -233,6 +233,17 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_div": 0, "loss_class": 0, "loss_heatmap": loss_heatmap}
         for src_masks, ious, object_score_logits, div_score_logits, is_point_used, pre_div_target_obj, post_div_target_obj in zip(src_masks_list, ious_list, object_score_logits_list, div_score_logits_list, is_point_used_list, pre_div_target_obj_list, post_div_target_obj_list):
+            if is_point_used.numel() != target_masks.shape[0]:
+                # Keep target alignment stable when the division gate drops outputs.
+                if is_point_used.numel() < target_masks.shape[0]:
+                    pad = torch.zeros(
+                        target_masks.shape[0] - is_point_used.numel(),
+                        dtype=torch.bool,
+                        device=is_point_used.device,
+                    )
+                    is_point_used = torch.cat([is_point_used, pad], dim=0)
+                else:
+                    is_point_used = is_point_used[: target_masks.shape[0]]
             target_masks_used = target_masks[is_point_used]
             assert len(target_masks_used) == len(src_masks)
 
