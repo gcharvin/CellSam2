@@ -9,11 +9,7 @@
 from typing import Iterable
 
 import torch
-from torch.utils.data import (
-    ConcatDataset as TorchConcatDataset,
-    Dataset,
-    Subset as TorchSubset,
-)
+from torch.utils.data import ConcatDataset as TorchConcatDataset,Dataset,Subset as TorchSubset
 
 
 class ConcatDataset(TorchConcatDataset):
@@ -97,8 +93,6 @@ class RepeatFactorWrapper(Dataset):
 
     def __getitem__(self, idx):
         if self.epoch_ids is None:
-            raise RuntimeError(
-                "Repeat ids haven't been computed. Did you forget to call set_epoch?"
-            )
+            raise RuntimeError("Repeat ids haven't been computed. Did you forget to call set_epoch?")
 
         return self.dataset[self.epoch_ids[idx]]

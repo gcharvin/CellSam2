@@ -17,3 +17,5 @@ events.out.tfevents.*
 SAM2_logs/*
 wandb/*
 *.docx
+.idea
+reults

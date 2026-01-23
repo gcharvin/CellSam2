@@ -934,13 +934,7 @@ class SAM2Base(torch.nn.Module):
     ):
         """Update memory features for temporal tracking."""
         # Encode current frame predictions into memory features
-        maskmem_features, maskmem_pos_enc = self._encode_memory_in_output(
-            current_vision_feats,
-            feat_sizes,
-            point_inputs,
-            run_mem_encoder,
-            current_out,
-        )
+        maskmem_features, maskmem_pos_enc = self._encode_memory_in_output(current_vision_feats, feat_sizes, point_inputs,run_mem_encoder,current_out)
         
         if maskmem_features is None or maskmem_pos_enc is None:
             return

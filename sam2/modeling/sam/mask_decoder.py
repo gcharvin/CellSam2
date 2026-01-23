@@ -80,31 +80,19 @@ class MaskDecoder(nn.Module):
         self.use_multimask_token_for_obj_ptr = use_multimask_token_for_obj_ptr
 
         self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(
-                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
-            ),
+            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
             LayerNorm2d(transformer_dim // 4),
             activation(),
-            nn.ConvTranspose2d(
-                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
-            ),
+            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
             activation(),
         )
         self.use_high_res_features = use_high_res_features
         if use_high_res_features:
-            self.conv_s0 = nn.Conv2d(
-                transformer_dim, transformer_dim // 8, kernel_size=1, stride=1
-            )
-            self.conv_s1 = nn.Conv2d(
-                transformer_dim, transformer_dim // 4, kernel_size=1, stride=1
-            )
+            self.conv_s0 = nn.Conv2d(transformer_dim, transformer_dim // 8, kernel_size=1, stride=1)
+            self.conv_s1 = nn.Conv2d(transformer_dim, transformer_dim // 4, kernel_size=1, stride=1)
 
         self.output_hypernetworks_mlps = nn.ModuleList(
-            [
-                MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
-                for i in range(self.num_mask_tokens)
-            ]
-        )
+            [ MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)for i in range(self.num_mask_tokens)])
 
         self.iou_prediction_head = MLP(
             transformer_dim,
@@ -151,11 +139,7 @@ class MaskDecoder(nn.Module):
         self._debug_div_log_now = False
 
     def _compute_div_gate(self, div_scores, obj_scores, iou_pred):
-        if (
-            self.div_obj_score_thresh is None
-            or self.obj_score_thresh is None
-            or self.pred_iou_thresh is None
-        ):
+        if self.div_obj_score_thresh is None or self.obj_score_thresh is None or self.pred_iou_thresh is None:
             return None
         iou_pair = iou_pred[:, 1:3]
         gate_div = div_scores > self.div_obj_score_thresh
@@ -171,10 +155,7 @@ class MaskDecoder(nn.Module):
             return 0.0
         if self.div_gate_ramp_steps <= 0:
             return self.div_gate_max_prob
-        progress = (
-            (self._div_gate_step - self.div_gate_warmup_steps)
-            / float(self.div_gate_ramp_steps)
-        )
+        progress = ((self._div_gate_step - self.div_gate_warmup_steps) / float(self.div_gate_ramp_steps))
         return self.div_gate_max_prob * min(1.0, max(0.0, progress))
 
     def forward(
@@ -244,20 +225,14 @@ class MaskDecoder(nn.Module):
                 # Gradually reintroduce the gate to avoid starving the division branch.
                 gate_prob = self._div_gate_prob()
                 if gate_prob > 0.0:
-                    gate_all = self._compute_div_gate(
-                        div_score_logits[:, 0],
-                        object_score_logits[:, 0],
-                        iou_pred,
-                    )
+                    gate_all = self._compute_div_gate(div_score_logits[:, 0],object_score_logits[:, 0],iou_pred,)
                     if gate_all is not None:
                         if gate_prob >= 1.0:
                             is_dividing = gate_all
                         else:
                             rand = torch.rand_like(is_dividing_gt.float())
                             use_gate = is_dividing_gt & (rand < gate_prob)
-                            is_dividing = torch.where(
-                                use_gate, gate_all, is_dividing_gt
-                            )
+                            is_dividing = torch.where(use_gate, gate_all, is_dividing_gt)
 
         if debug_log_now:
             with torch.no_grad():
@@ -273,11 +248,7 @@ class MaskDecoder(nn.Module):
                 pred_dividing = None
                 gate_div = gate_obj = gate_iou = gate_all = None
                 gate_div_only = gate_div_obj = gate_div_iou = None
-                if (
-                    self.div_obj_score_thresh is not None
-                    and self.obj_score_thresh is not None
-                    and self.pred_iou_thresh is not None
-                ):
+                if self.div_obj_score_thresh is not None and self.obj_score_thresh is not None and self.pred_iou_thresh is not None:
                     gate_div = div_scores > self.div_obj_score_thresh
                     gate_obj = obj_scores > self.obj_score_thresh
                     gate_iou = (iou_pair > self.pred_iou_thresh).any(1)
@@ -296,98 +267,53 @@ class MaskDecoder(nn.Module):
                     "div_debug/num_objects": float(num_objects),
                     "div_debug/num_div_input": float(num_div_input),
                     "div_debug/num_div_used": float(num_div_used),
-                    "div_debug/num_div_pred": float(num_div_pred)
-                    if num_div_pred is not None
-                    else None,
-                    "div_debug/num_div_mismatch": float(num_div_mismatch)
-                    if num_div_mismatch is not None
-                    else None,
-                    "div_debug/gate_div": float(gate_div.sum().item())
-                    if gate_div is not None
-                    else None,
-                    "div_debug/gate_obj": float(gate_obj.sum().item())
-                    if gate_obj is not None
-                    else None,
-                    "div_debug/gate_iou": float(gate_iou.sum().item())
-                    if gate_iou is not None
-                    else None,
-                    "div_debug/gate_div_only": float(gate_div_only.sum().item())
-                    if gate_div_only is not None
-                    else None,
-                    "div_debug/gate_div_obj": float(gate_div_obj.sum().item())
-                    if gate_div_obj is not None
-                    else None,
-                    "div_debug/gate_div_iou": float(gate_div_iou.sum().item())
-                    if gate_div_iou is not None
-                    else None,
-                    "div_debug/gate_all": float(gate_all.sum().item())
-                    if gate_all is not None
-                    else None,
+                    "div_debug/num_div_pred": float(num_div_pred) if num_div_pred is not None else None,
+                    "div_debug/num_div_mismatch": float(num_div_mismatch) if num_div_mismatch is not None else None,
+                    "div_debug/gate_div": float(gate_div.sum().item()) if gate_div is not None else None,
+                    "div_debug/gate_obj": float(gate_obj.sum().item()) if gate_obj is not None else None,
+                    "div_debug/gate_iou": float(gate_iou.sum().item()) if gate_iou is not None else None,
+                    "div_debug/gate_div_only": float(gate_div_only.sum().item()) if gate_div_only is not None else None,
+                    "div_debug/gate_div_obj": float(gate_div_obj.sum().item()) if gate_div_obj is not None else None,
+                    "div_debug/gate_div_iou": float(gate_div_iou.sum().item()) if gate_div_iou is not None else None,
+                    "div_debug/gate_all": float(gate_all.sum().item()) if gate_all is not None else None,
                     "div_debug/div_score_mean": float(div_scores.mean().item()),
                     "div_debug/div_score_min": float(div_scores.min().item()),
                     "div_debug/div_score_max": float(div_scores.max().item()),
                     "div_debug/obj_score_mean": float(obj_scores.mean().item()),
                     "div_debug/iou_max_mean": float(iou_max.mean().item()),
-                    "div_debug/gate_prob": float(gate_prob)
-                    if gate_prob is not None
-                    else None,
+                    "div_debug/gate_prob": float(gate_prob) if gate_prob is not None else None,
                 }
 
-                if num_div_input > 0 and num_div_input < num_objects:
-                    scalars["div_debug/div_score_mean_div"] = float(
-                        div_scores[gt_div].mean().item()
-                    )
-                    scalars["div_debug/div_score_mean_non_div"] = float(
-                        div_scores[~gt_div].mean().item()
-                    )
+                if 0 < num_div_input < num_objects:
+                    scalars["div_debug/div_score_mean_div"] = float(div_scores[gt_div].mean().item())
+                    scalars["div_debug/div_score_mean_non_div"] = float(div_scores[~gt_div].mean().item())
 
                 if is_dividing_provided and gate_all is not None:
                     gt_div_count = int(gt_div.sum().item())
                     if gt_div_count > 0:
                         gt_gate_pass = int((gt_div & gate_all).sum().item())
                         fn_mask = gt_div & ~gate_all
-                        scalars["div_debug/gt_gate_recall"] = (
-                            gt_gate_pass / gt_div_count
-                        )
+                        scalars["div_debug/gt_gate_recall"] = (gt_gate_pass / gt_div_count)
                         scalars["div_debug/gt_gate_pass"] = float(gt_gate_pass)
                         scalars["div_debug/gt_gate_fn"] = float(fn_mask.sum().item())
-                        scalars["div_debug/gt_fn_fail_div"] = float(
-                            (fn_mask & ~gate_div).sum().item()
-                        )
-                        scalars["div_debug/gt_fn_fail_obj"] = float(
-                            (fn_mask & ~gate_obj).sum().item()
-                        )
-                        scalars["div_debug/gt_fn_fail_iou"] = float(
-                            (fn_mask & ~gate_iou).sum().item()
-                        )
+                        scalars["div_debug/gt_fn_fail_div"] = float((fn_mask & ~gate_div).sum().item())
+                        scalars["div_debug/gt_fn_fail_obj"] = float((fn_mask & ~gate_obj).sum().item())
+                        scalars["div_debug/gt_fn_fail_iou"] = float((fn_mask & ~gate_iou).sum().item())
                         if gate_div_only is not None:
-                            scalars["div_debug/gt_gate_recall_div_only"] = float(
-                                (gt_div & gate_div_only).sum().item() / gt_div_count
-                            )
-                            scalars["div_debug/gt_gate_pass_div_only"] = float(
-                                (gt_div & gate_div_only).sum().item()
-                            )
+                            scalars["div_debug/gt_gate_recall_div_only"] = float((gt_div & gate_div_only).sum().item() / gt_div_count)
+                            scalars["div_debug/gt_gate_pass_div_only"] = float((gt_div & gate_div_only).sum().item())
                         if gate_div_obj is not None:
-                            scalars["div_debug/gt_gate_recall_div_obj"] = float(
-                                (gt_div & gate_div_obj).sum().item() / gt_div_count
-                            )
-                            scalars["div_debug/gt_gate_pass_div_obj"] = float(
-                                (gt_div & gate_div_obj).sum().item()
-                            )
+                            scalars["div_debug/gt_gate_recall_div_obj"] = float((gt_div & gate_div_obj).sum().item() / gt_div_count)
+                            scalars["div_debug/gt_gate_pass_div_obj"] = float((gt_div & gate_div_obj).sum().item())
                         if gate_div_iou is not None:
-                            scalars["div_debug/gt_gate_recall_div_iou"] = float(
-                                (gt_div & gate_div_iou).sum().item() / gt_div_count
-                            )
-                            scalars["div_debug/gt_gate_pass_div_iou"] = float(
-                                (gt_div & gate_div_iou).sum().item()
-                            )
+                            scalars["div_debug/gt_gate_recall_div_iou"] = float((gt_div & gate_div_iou).sum().item() / gt_div_count)
+                            scalars["div_debug/gt_gate_pass_div_iou"] = float((gt_div & gate_div_iou).sum().item())
 
                 msg = None
                 if num_div_pred is not None and num_div_pred > 0:
                     source = "provided" if is_dividing_provided else "pred"
                     mode = "train" if self.training else "eval"
-                    msg = (
-                        "Div debug(step=%s, mode=%s, source=%s): n=%s div_in=%s div_pred=%s"
+                    msg = ("Div debug(step=%s, mode=%s, source=%s): n=%s div_in=%s div_pred=%s"
                         " gate(div/obj/iou/all)=%s/%s/%s/%s"
                     ) % (
                         self._debug_div_step,
@@ -421,14 +347,10 @@ class MaskDecoder(nn.Module):
 
             if self.training and gt_masks is not None:
                 # Use GT to select the bud candidate during training.
-                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._match_bud_masks_to_gt(
-                    gt_masks, masks, iou_pred, mask_tokens_out, div_mask
-                )
+                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._match_bud_masks_to_gt(gt_masks, masks, iou_pred, mask_tokens_out, div_mask)
             else:
                 # In inference, favor the bud with minimal overlap against the mother.
-                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._select_bud_masks(
-                    masks, iou_pred, mask_tokens_out, div_mask
-                )
+                pred_bud_masks, pred_bud_ious, pred_bud_tokens = self._select_bud_masks(masks, iou_pred, mask_tokens_out, div_mask)
 
             # Interleave mother + bud for each dividing object.
             pred_div_masks = torch.cat([pred_mother_masks, pred_bud_masks], dim=1)
@@ -479,28 +401,15 @@ class MaskDecoder(nn.Module):
         # Concatenate output tokens
         s = 0
         if self.pred_obj_scores:
-            output_tokens = torch.cat(
-                [
-                    self.obj_score_token.weight,
-                    self.iou_token.weight,
-                    self.mask_tokens.weight,
-                ],
-                dim=0,
-            )
+            output_tokens = torch.cat([self.obj_score_token.weight,self.iou_token.weight,self.mask_tokens.weight],dim=0)
             s = 1
         else:
-            output_tokens = torch.cat(
-                [self.iou_token.weight, self.mask_tokens.weight], dim=0
-            )
+            output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
 
         if self.pred_div_scores:
-            output_tokens = torch.cat(
-                [output_tokens, self.div_score_token.weight], dim=0
-            )
+            output_tokens = torch.cat([output_tokens, self.div_score_token.weight], dim=0)
 
-        output_tokens = output_tokens.unsqueeze(0).expand(
-            sparse_prompt_embeddings.size(0), -1, -1
-        )
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
@@ -510,9 +419,7 @@ class MaskDecoder(nn.Module):
             assert image_embeddings.shape[0] == tokens.shape[0]
             src = image_embeddings
         src = src + dense_prompt_embeddings
-        assert (
-            image_pe.size(0) == 1
-        ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
+        assert (image_pe.size(0) == 1), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
         b, c, h, w = src.shape
 
@@ -533,9 +440,7 @@ class MaskDecoder(nn.Module):
 
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):
-            hyper_in_list.append(
-                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
-            )
+            hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
         hyper_in = torch.stack(hyper_in_list, dim=1)
         b, c, h, w = upscaled_embedding.shape
         masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
@@ -579,9 +484,7 @@ class MaskDecoder(nn.Module):
         multimask_logits = all_mask_logits[:, 1:, :, :]
         multimask_iou_scores = all_iou_scores[:, 1:]
         best_scores_inds = torch.argmax(multimask_iou_scores, dim=-1)
-        batch_inds = torch.arange(
-            multimask_iou_scores.size(0), device=all_iou_scores.device
-        )
+        batch_inds = torch.arange(multimask_iou_scores.size(0), device=all_iou_scores.device)
         best_multimask_logits = multimask_logits[batch_inds, best_scores_inds]
         best_multimask_logits = best_multimask_logits.unsqueeze(1)
         best_multimask_iou_scores = multimask_iou_scores[batch_inds, best_scores_inds]
@@ -620,12 +523,7 @@ class MaskDecoder(nn.Module):
 
         num_div = int(div_mask.sum().item())
         gts = gt_masks[-num_div:]  # [N, 1, H, W]
-        gts = F.interpolate(
-            gts.float(),
-            size=pred_bud_masks.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(1)  # [N, h, w]
+        gts = F.interpolate(gts.float(),size=pred_bud_masks.shape[-2:], mode="bilinear",align_corners=False).squeeze(1)  # [N, h, w]
 
         iou_0 = compute_iou(pred_bud_masks_sigmoid[:, 0], gts)
         iou_1 = compute_iou(pred_bud_masks_sigmoid[:, 1], gts)
@@ -638,9 +536,7 @@ class MaskDecoder(nn.Module):
                     "div_debug/bud_iou0_mean": float(iou_0.mean().item()),
                     "div_debug/bud_iou1_mean": float(iou_1.mean().item()),
                     "div_debug/bud_best_iou_mean": float(best_iou.mean().item()),
-                    "div_debug/bud_best_iou_lt_0.1_frac": float(
-                        (best_iou < 0.1).float().mean().item()
-                    ),
+                    "div_debug/bud_best_iou_lt_0.1_frac": float((best_iou < 0.1).float().mean().item()),
                     "div_debug/bud_choose_second_frac": float(choose_second.float().mean().item()),
                 }
                 self._log_div_debug(scalars, None)

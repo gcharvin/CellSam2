@@ -38,15 +38,8 @@ def get_video_path() -> Path:
     selected_option = tk.StringVar(value="video")
 
     tk.Label(selection_window, text="Choose input type:").pack(pady=10)
-    tk.Radiobutton(
-        selection_window, text="Video file", variable=selected_option, value="video"
-    ).pack(anchor=tk.W, padx=20)
-    tk.Radiobutton(
-        selection_window,
-        text="Folder of images",
-        variable=selected_option,
-        value="images",
-    ).pack(anchor=tk.W, padx=20)
+    tk.Radiobutton(selection_window, text="Video file", variable=selected_option, value="video").pack(anchor=tk.W, padx=20)
+    tk.Radiobutton(selection_window,text="Folder of images",variable=selected_option,value="images",).pack(anchor=tk.W, padx=20)
 
     path_result = [None]  # Use list to store result from callback
 
@@ -55,15 +48,10 @@ def get_video_path() -> Path:
         if option == "video":
             path_result[0] = filedialog.askopenfilename(
                 title="Select a video file",
-                filetypes=[
-                    ("Video files", "*.mp4 *.avi *.mov *.mkv"),
-                    ("All files", "*.*"),
-                ],
+                filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv"), ("All files", "*.*")],
             )
         else:  # images
-            path_result[0] = filedialog.askdirectory(
-                title="Select folder containing image sequence"
-            )
+            path_result[0] = filedialog.askdirectory(title="Select folder containing image sequence")
         selection_window.destroy()
 
     tk.Button(selection_window, text="Confirm", command=on_confirm).pack(pady=20)
@@ -78,13 +66,7 @@ def get_video_path() -> Path:
     return Path(path_result[0])
 
 
-def get_result_path(
-    base_dir: Path,
-    model_name: str,
-    input_path: Path,
-    dir_name: str,
-    res_path: Path = None,
-) -> Path:
+def get_result_path(base_dir: Path,model_name: str,input_path: Path,dir_name: str,res_path: Path = None,) -> Path:
     """Generate the result path based on input path structure.
 
     Args:
@@ -163,22 +145,14 @@ def show_anns(anns, borders=True, mask_alpha=0.1):
     ax = plt.gca()
     ax.set_autoscale_on(False)
 
-    img = np.ones(
-        (
-            sorted_anns[0]["segmentation"].shape[0],
-            sorted_anns[0]["segmentation"].shape[1],
-            4,
-        )
-    )
+    img = np.ones((sorted_anns[0]["segmentation"].shape[0], sorted_anns[0]["segmentation"].shape[1], 4,) )
     img[:, :, 3] = 0
     for ann in sorted_anns:
         m = ann["segmentation"]
         color_mask = np.concatenate([np.random.random(3), [mask_alpha]])
         img[m] = color_mask
         if borders:
-            contours, _ = cv2.findContours(
-                m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-            )
+            contours, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             # Try to smooth contours
             contours = [
                 cv2.approxPolyDP(contour, epsilon=0.01, closed=True)

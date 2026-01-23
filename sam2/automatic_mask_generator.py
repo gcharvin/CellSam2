@@ -386,9 +386,7 @@ class SAM2AutomaticMaskGenerator:
         new_masks = []
         new_iou_preds = []
 
-        for cur_points, cur_point_labels, low_res_mask in batch_iterator(
-            points_per_batch, points, point_labels, low_res_masks
-        ):
+        for cur_points, cur_point_labels, low_res_mask in batch_iterator(points_per_batch, points, point_labels, low_res_masks):
             best_masks, best_iou_preds, _ = self.predictor._predict(
                 cur_points[:, None, :],
                 cur_point_labels[:, None],

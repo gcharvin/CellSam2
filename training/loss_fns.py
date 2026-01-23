@@ -72,9 +72,8 @@ def sigmoid_focal_loss(
     return loss.flatten(1).mean(-1) / num_objects
 
 
-def iou_loss(
-    inputs, targets, pred_ious, num_objects, use_l1_loss=False
-):
+def iou_loss(inputs, targets, pred_ious, num_objects, use_l1_loss=False):
+
     """
     Args:
         inputs: A float tensor of arbitrary shape.
@@ -114,7 +113,8 @@ def get_border_from_binary_mask(gt_mask: torch.Tensor, size) -> torch.Tensor:
     border = dilated - gt_mask_resized  # subtract original to get rim
     return border.squeeze(0).squeeze(0)
 
-def compute_weighted_heatmap_loss(target_masks, heatmap_predictions, target_heatmaps, border_weight=10.0, high_conf_fg_weight=50.0, fg_threshold=0.8):
+def compute_weighted_heatmap_loss(target_masks, heatmap_predictions, target_heatmaps,
+                                  border_weight=10.0, high_conf_fg_weight=50.0, fg_threshold=0.8):
     """
     Compute weighted binary cross entropy loss for heatmap predictions.
     
@@ -135,11 +135,7 @@ def compute_weighted_heatmap_loss(target_masks, heatmap_predictions, target_heat
     weight = torch.where(border > 0, border_weight, weight)  # Border weight
     weight = torch.where(target_heatmaps > fg_threshold, high_conf_fg_weight, weight)  # High-confidence weight
     
-    return F.binary_cross_entropy_with_logits(
-        heatmap_predictions, 
-        target_heatmaps, 
-        weight=weight
-    )
+    return F.binary_cross_entropy_with_logits(heatmap_predictions,target_heatmaps,weight=weight)
 
 class MultiStepMultiMasksAndIous(nn.Module):
     def __init__(
@@ -220,11 +216,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
         heatmap_predictions = outputs["heatmap_predictions"]
 
-        loss_heatmap = compute_weighted_heatmap_loss(
-            target_masks,
-            heatmap_predictions,
-            target_heatmaps
-        )
+        loss_heatmap = compute_weighted_heatmap_loss(target_masks,heatmap_predictions,target_heatmaps)
 
         assert len(src_masks_list) == len(ious_list)
         assert len(object_score_logits_list) == len(ious_list)
@@ -238,15 +230,13 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
             num_objects = torch.tensor(max(1, src_masks.shape[0]), device=src_masks.device, dtype=torch.float)
 
-            self._update_losses(
-                losses, src_masks, target_masks_used, ious, num_objects, object_score_logits, div_score_logits, pre_div_target_obj, post_div_target_obj, target_divide
-            )
+            self._update_losses(losses, src_masks, target_masks_used, ious, num_objects,
+                                object_score_logits, div_score_logits, pre_div_target_obj, post_div_target_obj, target_divide)
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
-    def _update_losses(
-        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits, div_score_logits, pre_div_target_obj, post_div_target_obj, target_divide
-    ):
+    def _update_losses(self, losses, src_masks, target_masks, ious, num_objects, object_score_logits,
+                       div_score_logits, pre_div_target_obj, post_div_target_obj, target_divide):
         target_masks = target_masks.expand_as(src_masks)
 
         # get focal, dice and iou loss on all output masks in a prediction step
@@ -257,13 +247,9 @@ class MultiStepMultiMasksAndIous(nn.Module):
             alpha=self.focal_alpha,
             gamma=self.focal_gamma,
         )
-        loss_dice = dice_loss(
-            src_masks, target_masks, num_objects
-        )
+        loss_dice = dice_loss(src_masks, target_masks, num_objects)
         if not self.pred_obj_scores:
-            loss_class = torch.tensor(
-                0.0, dtype=loss_mask.dtype, device=loss_mask.device
-            )
+            loss_class = torch.tensor(0.0, dtype=loss_mask.dtype, device=loss_mask.device)
         else:
             loss_class = sigmoid_focal_loss(
                 object_score_logits,

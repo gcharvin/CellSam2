@@ -278,9 +278,7 @@ class Trainer:
         if not torch.distributed.is_available() or not torch.distributed.is_initialized():
             self.rank = 0  # fallback for CPU-only training
         else:
-            self.rank = setup_distributed_backend(
-                distributed_conf.backend, distributed_conf.timeout_mins
-            )
+            self.rank = setup_distributed_backend(distributed_conf.backend, distributed_conf.timeout_mins)
 
     def _setup_device(self, accelerator):
         self.local_rank, self.distributed_rank = get_machine_local_and_dist_rank()
@@ -315,24 +313,17 @@ class Trainer:
             self.model.register_comm_hook(process_group, hook)
 
     def _move_to_device(self):
-        logging.info(
-            f"Moving components to device {self.device} and local rank {self.local_rank}."
-        )
+        logging.info(f"Moving components to device {self.device} and local rank {self.local_rank}.")
 
         self.model.to(self.device)
 
-        logging.info(
-            f"Done moving components to device {self.device} and local rank {self.local_rank}."
-        )
+        logging.info(f"Done moving components to device {self.device} and local rank {self.local_rank}.")
 
     def save_checkpoint(self, epoch, checkpoint_names=None):
         checkpoint_folder = self.checkpoint_conf.save_dir
         makedir(checkpoint_folder)
         checkpoint_names = ["checkpoint"]
-        if (
-            self.checkpoint_conf.save_freq > 0
-            and (int(epoch) % self.checkpoint_conf.save_freq == 0)
-        ) or int(epoch) in self.checkpoint_conf.save_list:
+        if (self.checkpoint_conf.save_freq > 0 and (int(epoch) % self.checkpoint_conf.save_freq == 0)) or int(epoch) in self.checkpoint_conf.save_list:
             checkpoint_names.append(f"checkpoint_{int(epoch)}")
 
         checkpoint_paths = []
@@ -467,12 +458,7 @@ class Trainer:
     def is_intermediate_val_epoch(self, epoch):
         return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
 
-    def _step(
-        self,
-        batch: BatchedVideoDatapoint,
-        model: nn.Module,
-        phase: str,
-    ):
+    def _step(self, batch: BatchedVideoDatapoint, model: nn.Module, phase: str,):
         outputs = model(batch)
         
         # Convert tensors to lists per time step, filtering out padded entries
@@ -499,19 +485,11 @@ class Trainer:
         # loss contains multiple sub-components we wish to log
         step_losses = {}
         if isinstance(loss, dict):
-            step_losses.update(
-                {f"Losses/{phase}_{key}_{k}": v for k, v in loss.items()}
-            )
-            loss = self._log_loss_detailed_and_return_core_loss(
-                loss, loss_log_str, self.steps[phase]
-            )
+            step_losses.update({f"Losses/{phase}_{key}_{k}": v for k, v in loss.items()})
+            loss = self._log_loss_detailed_and_return_core_loss(loss, loss_log_str, self.steps[phase])
 
         if self.steps[phase] % self.logging_conf.log_scalar_frequency == 0:
-            self.logger.log(
-                loss_log_str,
-                loss,
-                self.steps[phase],
-            )
+            self.logger.log(loss_log_str,loss,self.steps[phase],)
 
         self.steps[phase] += 1
 
@@ -521,10 +499,7 @@ class Trainer:
             meters_dict = self.meters[phase][key]
             if meters_dict is not None:
                 for _, meter in meters_dict.items():
-                    meter.update(
-                        find_stages=outputs,
-                        find_metadatas=batch.metadata,
-                    )
+                    meter.update(find_stages=outputs,find_metadatas=batch.metadata,)
 
         return ret_tuple
 
@@ -566,10 +541,7 @@ class Trainer:
 
             # log train to text file.
             if self.distributed_rank == 0:
-                with g_pathmgr.open(
-                    os.path.join(self.logging_conf.log_dir, "train_stats.json"),
-                    "a",
-                ) as f:
+                with g_pathmgr.open(os.path.join(self.logging_conf.log_dir, "train_stats.json"),"a",) as f:
                     f.write(json.dumps(outs) + "\n")
 
             # Save checkpoint before validating
@@ -585,10 +557,7 @@ class Trainer:
 
             if self.distributed_rank == 0:
                 self.best_meter_values.update(self._get_trainer_state("train"))
-                with g_pathmgr.open(
-                    os.path.join(self.logging_conf.log_dir, "best_stats.json"),
-                    "a",
-                ) as f:
+                with g_pathmgr.open(os.path.join(self.logging_conf.log_dir, "best_stats.json"),"a",) as f:
                     f.write(json.dumps(self.best_meter_values) + "\n")
 
             self.epoch += 1
@@ -606,10 +575,7 @@ class Trainer:
         self.logger.log_dict(outs, self.epoch)  # Logged only on rank 0
 
         if self.distributed_rank == 0:
-            with g_pathmgr.open(
-                os.path.join(self.logging_conf.log_dir, "val_stats.json"),
-                "a",
-            ) as f:
+            with g_pathmgr.open(os.path.join(self.logging_conf.log_dir, "val_stats.json"),"a",) as f:
                 f.write(json.dumps(outs) + "\n")
 
     def val_epoch(self, val_loader, phase):
@@ -627,9 +593,7 @@ class Trainer:
             for key in self.loss.keys():
                 loss_names.append(f"Losses/{p}_{key}_loss")
 
-        loss_mts = OrderedDict(
-            [(name, AverageMeter(name, self.device, ":.2e")) for name in loss_names]
-        )
+        loss_mts = OrderedDict([(name, AverageMeter(name, self.device, ":.2e")) for name in loss_names])
         extra_loss_mts = {}
 
         for model in curr_models:
@@ -658,18 +622,10 @@ class Trainer:
                 with torch.amp.autocast(
                     str(self.device),
                     enabled=(self.optim_conf.amp.enabled if self.optim_conf else False),
-                    dtype=(
-                        get_amp_type(self.optim_conf.amp.amp_dtype)
-                        if self.optim_conf
-                        else None
-                    ),
+                    dtype=(get_amp_type(self.optim_conf.amp.amp_dtype) if self.optim_conf else None),
                 ):
                     for phase, model in zip(curr_phases, curr_models):
-                        loss_dict, batch_size, extra_losses = self._step(
-                            batch,
-                            model,
-                            phase,
-                        )
+                        loss_dict, batch_size, extra_losses = self._step(batch,model,phase,)
 
                         assert len(loss_dict) == 1
                         loss_key, loss = loss_dict.popitem()
@@ -685,9 +641,7 @@ class Trainer:
             batch_time.update(time.time() - end)
             end = time.time()
 
-            self.time_elapsed_meter.update(
-                time.time() - self.start_time + self.ckpt_time_elapsed
-            )
+            self.time_elapsed_meter.update(time.time() - self.start_time + self.ckpt_time_elapsed)
 
             if torch.cuda.is_available():
                 mem.update(reset_peak_usage=True)
@@ -698,11 +652,7 @@ class Trainer:
             if data_iter % self.logging_conf.log_scalar_frequency == 0:
                 # Log progress meters.
                 for progress_meter in progress.meters:
-                    self.logger.log(
-                        os.path.join("Step_Stats", phase, progress_meter.name),
-                        progress_meter.val,
-                        self.steps[Phase.VAL],
-                    )
+                    self.logger.log(os.path.join("Step_Stats", phase, progress_meter.name),progress_meter.val,self.steps[Phase.VAL])
 
             if data_iter % 10 == 0 and is_dist_avail_and_initialized():
                 dist.barrier()
@@ -768,20 +718,12 @@ class Trainer:
         for batch_key in self.loss.keys():
             loss_names.append(f"Losses/{phase}_{batch_key}_loss")
 
-        loss_mts = OrderedDict(
-            [(name, AverageMeter(name, self.device, ":.2e")) for name in loss_names]
-        )
+        loss_mts = OrderedDict([(name, AverageMeter(name, self.device, ":.2e")) for name in loss_names])
         extra_loss_mts = {}
 
         progress = ProgressMeter(
             iters_per_epoch,
-            [
-                batch_time_meter,
-                data_time_meter,
-                mem_meter,
-                self.time_elapsed_meter,
-                *loss_mts.values(),
-            ],
+            [batch_time_meter,data_time_meter, mem_meter, self.time_elapsed_meter,*loss_mts.values(),            ],
             self._get_meters([phase]),
             prefix="Train Epoch: [{}]".format(self.epoch),
         )
@@ -794,9 +736,7 @@ class Trainer:
             # measure data loading time
             data_time_meter.update(time.time() - end)
             data_times.append(data_time_meter.val)
-            batch = batch.to(
-                self.device, non_blocking=True
-            )  # move tensors in a tensorclass
+            batch = batch.to(self.device, non_blocking=True)  # move tensors in a tensorclass
 
             try:
                 self._run_step(batch, phase, loss_mts, extra_loss_mts)
@@ -806,23 +746,15 @@ class Trainer:
                 self.where = float(exact_epoch) / self.max_epochs
                 assert self.where <= 1 + self.EPSILON
                 if self.where < 1.0:
-                    self.optim.step_schedulers(
-                        self.where, step=int(exact_epoch * iters_per_epoch)
-                    )
+                    self.optim.step_schedulers(self.where, step=int(exact_epoch * iters_per_epoch))
                 else:
-                    logging.warning(
-                        f"Skipping scheduler update since the training is at the end, i.e, {self.where} of [0,1]."
-                    )
+                    logging.warning(f"Skipping scheduler update since the training is at the end, i.e, {self.where} of [0,1].")
 
                 # Log schedulers
                 if data_iter % self.logging_conf.log_scalar_frequency == 0:
                     for j, param_group in enumerate(self.optim.optimizer.param_groups):
                         for option in self.optim.schedulers[j]:
-                            optim_prefix = (
-                                "" + f"{j}_"
-                                if len(self.optim.optimizer.param_groups) > 1
-                                else ""
-                            )
+                            optim_prefix = ("" + f"{j}_" if len(self.optim.optimizer.param_groups) > 1 else "")
                             self.logger.log(
                                 os.path.join("Optim", f"{optim_prefix}", option),
                                 param_group[option],
@@ -835,9 +767,7 @@ class Trainer:
                     self.gradient_clipper(model=self.model)
 
                 if self.gradient_logger is not None:
-                    self.gradient_logger(
-                        self.model, rank=self.distributed_rank, where=self.where
-                    )
+                    self.gradient_logger(self.model, rank=self.distributed_rank, where=self.where)
 
                 # Optimizer step: the scaler will make sure gradients are not
                 # applied if the gradients are infinite
@@ -848,9 +778,7 @@ class Trainer:
                 batch_time_meter.update(time.time() - end)
                 end = time.time()
 
-                self.time_elapsed_meter.update(
-                    time.time() - self.start_time + self.ckpt_time_elapsed
-                )
+                self.time_elapsed_meter.update(time.time() - self.start_time + self.ckpt_time_elapsed)
 
                 mem_meter.update(reset_peak_usage=True)
                 if data_iter % self.logging_conf.log_freq == 0:
@@ -931,16 +859,8 @@ class Trainer:
         # grads will also update a model even if the step doesn't produce
         # gradients
         self.optim.zero_grad(set_to_none=True)
-        with torch.amp.autocast(
-            str(self.device),
-            enabled=self.optim_conf.amp.enabled,
-            dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
-        ):
-            loss_dict, batch_size, extra_losses = self._step(
-                batch,
-                self.model,
-                phase,
-            )
+        with torch.amp.autocast(str(self.device),enabled=self.optim_conf.amp.enabled,dtype=get_amp_type(self.optim_conf.amp.amp_dtype)):
+            loss_dict, batch_size, extra_losses = self._step(batch,self.model,phase,)
 
         assert len(loss_dict) == 1
         loss_key, loss = loss_dict.popitem()
@@ -957,9 +877,7 @@ class Trainer:
         loss_mts[loss_key].update(loss.item(), batch_size)
         for extra_loss_key, extra_loss in extra_losses.items():
             if extra_loss_key not in extra_loss_mts:
-                extra_loss_mts[extra_loss_key] = AverageMeter(
-                    extra_loss_key, self.device, ":.2e"
-                )
+                extra_loss_mts[extra_loss_key] = AverageMeter(extra_loss_key, self.device, ":.2e")
             extra_loss_mts[extra_loss_key].update(extra_loss.item(), batch_size)
 
     def _log_meters_and_save_best_ckpts(self, phases: List[str]):
@@ -977,8 +895,7 @@ class Trainer:
                     continue
 
                 tracked_meter_key = os.path.join(key, meter_subkey)
-                if tracked_meter_key not in self.best_meter_values or is_better_check(
-                    meter_value,
+                if tracked_meter_key not in self.best_meter_values or is_better_check(meter_value,
                     self.best_meter_values[tracked_meter_key],
                 ):
                     self.best_meter_values[tracked_meter_key] = meter_value
@@ -997,9 +914,7 @@ class Trainer:
     def _log_timers(self, phase):
         time_remaining = 0
         epochs_remaining = self.max_epochs - self.epoch - 1
-        val_epochs_remaining = sum(
-            n % self.val_epoch_freq == 0 for n in range(self.epoch, self.max_epochs)
-        )
+        val_epochs_remaining = sum(n % self.val_epoch_freq == 0 for n in range(self.epoch, self.max_epochs))
 
         # Adding the guaranteed val run at the end if val_epoch_freq doesn't coincide with
         # the end epoch.
@@ -1010,10 +925,7 @@ class Trainer:
         if phase == Phase.VAL:
             val_epochs_remaining -= 1
 
-        time_remaining += (
-            epochs_remaining * self.est_epoch_time[Phase.TRAIN]
-            + val_epochs_remaining * self.est_epoch_time[Phase.VAL]
-        )
+        time_remaining += (epochs_remaining * self.est_epoch_time[Phase.TRAIN]+ val_epochs_remaining * self.est_epoch_time[Phase.VAL])
 
         self.logger.log(
             os.path.join("Step_Stats", phase, self.time_elapsed_meter.name),
@@ -1030,9 +942,7 @@ class Trainer:
     def _check_val_key_match(self, val_keys, phase):
         if val_keys is not None:
             # Check if there are any duplicates
-            assert len(val_keys) == len(
-                set(val_keys)
-            ), f"Duplicate keys in val datasets, keys: {val_keys}"
+            assert len(val_keys) == len(set(val_keys)), f"Duplicate keys in val datasets, keys: {val_keys}"
 
             # Check that the keys match the meter keys
             if self.meters_conf is not None and phase in self.meters_conf:
@@ -1097,17 +1007,10 @@ class Trainer:
         if self.meters_conf:
             self.meters = instantiate(self.meters_conf, _convert_="all")
 
-        self.scaler = torch.amp.GradScaler(
-            self.device,
-            enabled=self.optim_conf.amp.enabled if self.optim_conf else False,
-        )
+        self.scaler = torch.amp.GradScaler(self.device,enabled=self.optim_conf.amp.enabled if self.optim_conf else False)
 
-        self.gradient_clipper = (
-            instantiate(self.optim_conf.gradient_clip) if self.optim_conf else None
-        )
-        self.gradient_logger = (
-            instantiate(self.optim_conf.gradient_logger) if self.optim_conf else None
-        )
+        self.gradient_clipper = (instantiate(self.optim_conf.gradient_clip) if self.optim_conf else None)
+        self.gradient_logger = (instantiate(self.optim_conf.gradient_logger) if self.optim_conf else None)
 
         logging.info("Finished setting up components: model,loss, optim, meters etc.")
 
@@ -1152,21 +1055,15 @@ def print_model_summary(model: torch.nn.Module, log_dir: str = ""):
     if get_rank() != 0:
         return
     param_kwargs = {}
-    trainable_parameters = sum(
-        p.numel() for p in model.parameters(**param_kwargs) if p.requires_grad
-    )
+    trainable_parameters = sum(p.numel() for p in model.parameters(**param_kwargs) if p.requires_grad)
     total_parameters = sum(p.numel() for p in model.parameters(**param_kwargs))
     non_trainable_parameters = total_parameters - trainable_parameters
     logging.info("==" * 10)
     logging.info(f"Summary for model {type(model)}")
     logging.info(f"Model is {model}")
     logging.info(f"\tTotal parameters {get_human_readable_count(total_parameters)}")
-    logging.info(
-        f"\tTrainable parameters {get_human_readable_count(trainable_parameters)}"
-    )
-    logging.info(
-        f"\tNon-Trainable parameters {get_human_readable_count(non_trainable_parameters)}"
-    )
+    logging.info(f"\tTrainable parameters {get_human_readable_count(trainable_parameters)}")
+    logging.info(f"\tNon-Trainable parameters {get_human_readable_count(non_trainable_parameters)}")
     logging.info("==" * 10)
 
     if log_dir:

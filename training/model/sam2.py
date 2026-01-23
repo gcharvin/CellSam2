@@ -78,9 +78,7 @@ class SAM2Train(SAM2Base):
         self.prob_to_use_pt_input_for_eval = prob_to_use_pt_input_for_eval
         self.prob_to_use_box_input_for_eval = prob_to_use_box_input_for_eval
         if prob_to_use_pt_input_for_train > 0 or prob_to_use_pt_input_for_eval > 0:
-            logging.info(
-                f"Training with points (sampled from masks) as inputs with p={prob_to_use_pt_input_for_train}"
-            )
+            logging.info(f"Training with points (sampled from masks) as inputs with p={prob_to_use_pt_input_for_train}")
             assert num_frames_to_correct_for_train >= num_init_cond_frames_for_train
             assert num_frames_to_correct_for_eval >= num_init_cond_frames_for_eval
 
@@ -125,14 +123,10 @@ class SAM2Train(SAM2Base):
             return torch.zeros_like(masks, dtype=torch.bool)
         masks_bool = masks.bool()
         kernel = 2 * radius + 1
-        dilated = F.max_pool2d(
-            masks_bool.float(), kernel_size=kernel, stride=1, padding=radius
-        )
+        dilated = F.max_pool2d(masks_bool.float(), kernel_size=kernel, stride=1, padding=radius)
         return (dilated > 0.5) & (~masks_bool)
 
-    def _sample_ring_points(
-        self, masks: torch.Tensor, div_flags: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _sample_ring_points(self, masks: torch.Tensor, div_flags: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # Sample a positive point from the ring only for dividing objects.
         ring_masks = self._compute_ring_masks(masks, self.div_ring_radius)
         div_flags = div_flags.to(masks.device)
@@ -164,12 +158,7 @@ class SAM2Train(SAM2Base):
         # Compute the image features on those unique image ids
         image = img_batch[unique_img_ids]
         backbone_out = self.forward_image(image)
-        (
-            _,
-            vision_feats,
-            vision_pos_embeds,
-            feat_sizes,
-        ) = self._prepare_backbone_features(backbone_out)
+        (_,vision_feats,vision_pos_embeds,feat_sizes,) = self._prepare_backbone_features(backbone_out)
         # Inverse-map image features for `unique_img_ids` to the final image features
         # for the original input `img_ids`.
         if inv_ids is not None:
@@ -261,19 +250,11 @@ class SAM2Train(SAM2Base):
         use_pt_input = self.rng.random() < prob_to_use_pt_input
         if rand_init_cond_frames and num_init_cond_frames > 1:
             # randomly select 1 to `num_init_cond_frames` frames as initial conditioning frames
-            num_init_cond_frames = self.rng.integers(
-                1, num_init_cond_frames, endpoint=True
-            )
-        if (
-            use_pt_input
-            and rand_frames_to_correct
-            and num_frames_to_correct > num_init_cond_frames
-        ):
+            num_init_cond_frames = self.rng.integers(1, num_init_cond_frames, endpoint=True)
+        if use_pt_input and rand_frames_to_correct and num_frames_to_correct > num_init_cond_frames:
             # randomly select `num_init_cond_frames` to `num_frames_to_correct` frames to sample
             # correction clicks (only for the case of point input)
-            num_frames_to_correct = self.rng.integers(
-                num_init_cond_frames, num_frames_to_correct, endpoint=True
-            )
+            num_frames_to_correct = self.rng.integers(num_init_cond_frames, num_frames_to_correct, endpoint=True)
         backbone_out["use_pt_input"] = use_pt_input
 
         # Sample initial conditioning frames
@@ -281,15 +262,9 @@ class SAM2Train(SAM2Base):
             init_cond_frames = [start_frame_idx]  # starting frame
         else:
             # starting frame + randomly selected remaining frames (without replacement)
-            init_cond_frames = [start_frame_idx] + self.rng.choice(
-                range(start_frame_idx + 1, num_frames),
-                num_init_cond_frames - 1,
-                replace=False,
-            ).tolist()
+            init_cond_frames = [start_frame_idx] + self.rng.choice(range(start_frame_idx + 1, num_frames),num_init_cond_frames - 1,replace=False).tolist()
         backbone_out["init_cond_frames"] = init_cond_frames
-        backbone_out["frames_not_in_init_cond"] = [
-            t for t in range(start_frame_idx, num_frames) if t not in init_cond_frames
-        ]
+        backbone_out["frames_not_in_init_cond"] = [t for t in range(start_frame_idx, num_frames) if t not in init_cond_frames]
         # Prepare mask or point inputs on initial conditioning frames
         backbone_out["mask_inputs_per_frame"] = {}  # {frame_idx: <input_masks>}
         backbone_out["point_inputs_per_frame"] = {}  # {frame_idx: <input_points>}
@@ -303,9 +278,7 @@ class SAM2Train(SAM2Base):
                 # During training # P(box) = prob_to_use_pt_input * prob_to_use_box_input
                 use_box_input = self.rng.random() < prob_to_use_box_input
                 if use_box_input and step_t_is_bkgd_mask.sum() == 0: # Only sample box points if there are no bkgd points
-                    points, labels = sample_box_points(
-                        prompt_masks_per_frame[t],
-                    )
+                    points, labels = sample_box_points(prompt_masks_per_frame[t])
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
                     # ground-truth mask; we may sample more correction points on the fly)
@@ -329,23 +302,16 @@ class SAM2Train(SAM2Base):
                 if self.training and self.div_ring_radius > 0:
                     div_flags = div_flags_per_frame.get(t)
                     if div_flags is not None and div_flags.any():
-                        ring_points, ring_labels = self._sample_ring_points(
-                            prompt_masks_per_frame[t], div_flags
-                        )
+                        ring_points, ring_labels = self._sample_ring_points(prompt_masks_per_frame[t], div_flags)
                         ring_mask = ring_labels[:, 0] > 0
                         if self.div_ring_point_prob < 1.0 and ring_mask.any():
-                            keep = torch.rand(
-                                ring_mask.shape, device=ring_mask.device
-                            ) < self.div_ring_point_prob
+                            keep = torch.rand(ring_mask.shape, device=ring_mask.device) < self.div_ring_point_prob
                             ring_mask = ring_mask & keep
                         if ring_mask.any():
                             # Replace the initial point with a ring point to expose bud context.
                             points[ring_mask] = ring_points[ring_mask]
                             labels[ring_mask] = ring_labels[ring_mask]
-                            point_inputs = {
-                                "point_coords": points,
-                                "point_labels": labels,
-                            }
+                            point_inputs = {"point_coords": points,"point_labels": labels,}
                 backbone_out["point_inputs_per_frame"][t] = point_inputs
 
         # Sample frames where we will add correction clicks on the fly
@@ -359,30 +325,19 @@ class SAM2Train(SAM2Base):
             assert num_frames_to_correct > num_init_cond_frames
             # initial cond frame + randomly selected remaining frames (without replacement)
             extra_num = num_frames_to_correct - num_init_cond_frames
-            frames_to_add_correction_pt = (
-                init_cond_frames
-                + self.rng.choice(
-                    backbone_out["frames_not_in_init_cond"], extra_num, replace=False
-                ).tolist()
-            )
+            frames_to_add_correction_pt = (init_cond_frames
+                + self.rng.choice(backbone_out["frames_not_in_init_cond"], extra_num, replace=False).tolist())
         backbone_out["frames_to_add_correction_pt"] = frames_to_add_correction_pt
 
         return backbone_out
 
-    def forward_tracking(
-        self, backbone_out, input: BatchedVideoDatapoint, return_dict=False
-    ):
+    def forward_tracking(self, backbone_out, input: BatchedVideoDatapoint, return_dict=False):
         """Forward video tracking on each frame (and sample correction clicks)."""
         img_feats_already_computed = backbone_out["backbone_fpn"] is not None
         if img_feats_already_computed:
             # Prepare the backbone features
             # - vision_feats and vision_pos_embeds are in (HW)BC format
-            (
-                _,
-                vision_feats,
-                vision_pos_embeds,
-                feat_sizes,
-            ) = self._prepare_backbone_features(backbone_out)
+            ( _,vision_feats, vision_pos_embeds, feat_sizes,) = self._prepare_backbone_features(backbone_out)
 
         # Starting the stage loop
         num_frames = backbone_out["num_frames"]
@@ -412,14 +367,8 @@ class SAM2Train(SAM2Base):
             else:
                 # Otherwise, compute the image features on the fly for the given img_ids
                 # (this might be used for evaluation on long videos to avoid backbone OOM).
-                (
-                    _,
-                    current_vision_feats,
-                    current_vision_pos_embeds,
-                    feat_sizes,
-                ) = self._prepare_backbone_features_per_frame(
-                    input.flat_img_batch, img_ids
-                )
+                (_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) = (
+                    self._prepare_backbone_features_per_frame(input.flat_img_batch, img_ids))
 
             # Get output masks based on this frame's prompts and previous memory
             current_out, tracking_object_ids, memory_dict = self.track_step(
@@ -508,38 +457,16 @@ class SAM2Train(SAM2Base):
         )
 
         # Unpack SAM outputs
-        (
-            ious,
-            low_res_masks,
-            high_res_masks,
-            obj_ptr,
-            object_score_logits_dict,
-            div_score_logits,
-            is_dividing,
-        ) = sam_outputs
+        (ious,low_res_masks,high_res_masks,obj_ptr,object_score_logits_dict,div_score_logits,is_dividing,) = sam_outputs
 
         # Store prediction results
-        self._store_prediction_results(
-            current_out,
-            low_res_masks,
-            high_res_masks,
-            ious,
-            point_inputs,
-            object_score_logits_dict,
-            div_score_logits,
-        )
+        self._store_prediction_results(current_out,low_res_masks,high_res_masks,ious,point_inputs,object_score_logits_dict,div_score_logits,)
 
         current_out["heatmap_predictions"] = self.get_heatmap_predictions(current_vision_feats, feat_sizes)[0,0] # assume batch size is 1
 
         # Handle cell tracking and division
         keep_tokens_mask, tracking_object_ids, mother_ids, prev_tracking_object_ids = self._handle_cell_tracking(
-            current_out,
-            input,
-            frame_idx,
-            is_dividing,
-            tracking_object_ids,
-            obj_ptr
-        )
+            current_out,input, frame_idx, is_dividing, tracking_object_ids, obj_ptr)
 
         # Apply iterative correction points if needed
         if frame_idx in frames_to_add_correction_pt and keep_tokens_mask.sum() > 0:
@@ -554,17 +481,10 @@ class SAM2Train(SAM2Base):
                     keep_tokens_mask,
                 )
             else:
-                logging.warning(
-                    "Skipping correction points at frame %s due to division.",
-                    frame_idx,
-                )
+                logging.warning("Skipping correction points at frame %s due to division.",frame_idx,) # FIXME
 
         # Adjust vision features based on token count changes
-        current_vision_feats = self._adjust_vision_features(
-            pix_feat.shape[0],
-            current_out["pred_masks"].shape[0],
-            current_vision_feats
-        )
+        current_vision_feats = self._adjust_vision_features(pix_feat.shape[0],current_out["pred_masks"].shape[0],current_vision_feats)
 
         # Update memory with new features
         if current_out["pred_masks"].shape[0] > 0:
@@ -586,16 +506,8 @@ class SAM2Train(SAM2Base):
 
         return current_out, tracking_object_ids, memory_dict
 
-    def _store_prediction_results(
-        self,
-        current_out,
-        low_res_masks,
-        high_res_masks,
-        ious,
-        point_inputs,
-        object_score_logits_dict,
-        div_score_logits,
-    ):
+    def _store_prediction_results(self,current_out,low_res_masks,high_res_masks,ious,
+                                  point_inputs,object_score_logits_dict,div_score_logits,):
         
         """Store prediction results in the output dictionary."""
         current_out["multistep_pred_masks"] = [low_res_masks]
@@ -606,15 +518,7 @@ class SAM2Train(SAM2Base):
         current_out["multistep_div_score_logits"] = [div_score_logits]
         current_out["post_split_object_score_logits"] = [object_score_logits_dict["post_div"]]
         
-    def _handle_cell_tracking(
-        self,
-        current_out,
-        input,
-        frame_idx,
-        is_dividing,
-        tracking_object_ids,
-        obj_ptr
-    ):
+    def _handle_cell_tracking(self,current_out,input,frame_idx,is_dividing,tracking_object_ids, obj_ptr):
         """Handle cell tracking and division events."""
         # Get cell tracking mask for current frame (filter out padded entries)
         cell_tracks_mask = input.cell_tracks_mask[frame_idx][input.is_real[frame_idx]]
@@ -655,16 +559,12 @@ class SAM2Train(SAM2Base):
                     continue
                 tracking_object_ids_list.append(daughter_id)
                 keep_tokens_mask_list.append(True)
-                post_div_target_obj_list.append(
-                    torch.ones_like(pre_div_target_obj[idx])
-                )
+                post_div_target_obj_list.append(torch.ones_like(pre_div_target_obj[idx]))
 
         post_div_target_obj = torch.stack(post_div_target_obj_list, dim=0)
         current_out["post_div_target_obj"] = [post_div_target_obj]
 
-        keep_tokens_mask = torch.tensor(
-            keep_tokens_mask_list, device=cell_tracks_mask.device, dtype=torch.bool
-        )
+        keep_tokens_mask = torch.tensor(keep_tokens_mask_list, device=cell_tracks_mask.device, dtype=torch.bool)
         current_out["multistep_is_point_used"] = [torch.ones_like(keep_tokens_mask).bool()]
 
         tracking_object_ids = torch.stack(tracking_object_ids_list, dim=0)
@@ -688,13 +588,8 @@ class SAM2Train(SAM2Base):
             return [feat[:, :cur_num_tokens] for feat in current_vision_feats]
         elif prev_num_tokens < cur_num_tokens:
             # Expand feature dimensions if tokens were added (e.g., cell division)
-            return [
-                torch.cat((
-                    feat, 
-                    feat[:, :1].repeat(1, cur_num_tokens - prev_num_tokens, 1)
-                ), dim=1) 
-                for feat in current_vision_feats
-            ]
+            return [torch.cat((feat,feat[:, :1].repeat(1, cur_num_tokens - prev_num_tokens, 1)), dim=1)
+                for feat in current_vision_feats]
         return current_vision_feats
 
 
@@ -702,14 +597,8 @@ class SAM2Train(SAM2Base):
 
         img_ids = input.flat_obj_to_img_idx[0]
 
-        (
-            _,
-            current_vision_feats,
-            current_vision_pos_embeds,
-            feat_sizes,
-        ) = self._prepare_backbone_features_per_frame(
-            input.flat_img_batch, img_ids
-        )
+        (_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) = self._prepare_backbone_features_per_frame(
+            input.flat_img_batch, img_ids)
 
 
         heatmap_predictions = self.get_heatmap_predictions(current_vision_feats, feat_sizes)[0,0]
@@ -741,15 +630,7 @@ class SAM2Train(SAM2Base):
 
         return bkgd_points
 
-    def _iter_correct_pt_sampling(
-        self,
-        point_inputs,
-        gt_masks,
-        high_res_features,
-        pix_feat_with_mem,
-        current_out,
-        keep_tokens_mask,
-    ):
+    def _iter_correct_pt_sampling(self, point_inputs,gt_masks,high_res_features,pix_feat_with_mem,current_out,keep_tokens_mask,):
         """
         Iteratively sample correction points to improve mask predictions.
         
@@ -825,15 +706,7 @@ class SAM2Train(SAM2Base):
                 )
                 
             # Unpack SAM outputs
-            (
-                ious,
-                low_res_masks,
-                high_res_masks,
-                obj_ptr,
-                object_score_logits_dict,
-                div_score_logits,
-                is_dividing,
-            ) = sam_outputs
+            (ious,low_res_masks,high_res_masks,obj_ptr,object_score_logits_dict,div_score_logits,is_dividing,) = sam_outputs
             
             # Store results for this correction step
             current_out["multistep_pred_masks"].append(low_res_masks)

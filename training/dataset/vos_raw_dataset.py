@@ -84,41 +84,30 @@ class CTCRawDataset(VOSRawDataset):
             excluded_files = []
 
         # Check if it's not in excluded_files
-        self.video_names = sorted(
-            [video_name for video_name in subset if video_name not in excluded_files]
-        )
+        self.video_names = sorted([video_name for video_name in subset if video_name not in excluded_files])
 
         # Build index of (video_name, start_frame) pairs
         self.frame_index = []
         for video_name in self.video_names:
             # For initialization, we need all frames to know how many starting points we have
             all_frames = self.get_all_frames(video_name)
-            frame_ids = [
-                int(re.findall(r'\d+', fpath.stem)[0]) for fpath in all_frames
-            ]
+            frame_ids = [int(re.findall(r'\d+', fpath.stem)[0]) for fpath in all_frames]
 
             div_start_frames = set()
-            track_path = (
-                self.train_dir / (video_name + "_GT") / "TRA" / "man_track.txt"
-            )
+            track_path = (self.train_dir / (video_name + "_GT") / "TRA" / "man_track.txt")
             if track_path.exists():
                 man_track = np.loadtxt(track_path, dtype=np.int16)
                 if man_track.ndim == 1:
                     man_track = man_track.reshape(1, -1)
                 # Use man_track start frames to bias sampling toward division events.
-                div_start_frames = set(
-                    man_track[man_track[:, 3] > 0, 1].astype(int).tolist()
-                )
+                div_start_frames = set(man_track[man_track[:, 3] > 0, 1].astype(int).tolist())
             frame_has_div = [fid in div_start_frames for fid in frame_ids]
             
             # For each possible start frame that allows num_frames sequence
             max_start_idx = len(all_frames) - self.num_frames + 1 if self.num_frames > 1 else len(all_frames)
             for i in range(0, max_start_idx):
                 self.frame_index.append((video_name, i))
-                if (
-                    self.division_oversample_factor > 1
-                    and any(frame_has_div[i : i + self.num_frames])
-                ):
+                if self.division_oversample_factor > 1 and any(frame_has_div[i : i + self.num_frames]):
                     # Duplicate indices so bud/division clips appear more often in training.
                     for _ in range(self.division_oversample_factor - 1):
                         self.frame_index.append((video_name, i))
@@ -229,9 +218,7 @@ class PNGRawDataset(VOSRawDataset):
             excluded_files = []
 
         # Check if it's not in excluded_files
-        self.video_names = sorted(
-            [video_name for video_name in subset if video_name not in excluded_files]
-        )
+        self.video_names = sorted([video_name for video_name in subset if video_name not in excluded_files])
 
         if self.single_object_mode:
             # single object mode
@@ -240,8 +227,7 @@ class PNGRawDataset(VOSRawDataset):
                     os.path.join(video_name, obj)
                     for video_name in self.video_names
                     for obj in os.listdir(os.path.join(self.gt_folder, video_name))
-                ]
-            )
+                ])
 
         if frames_sampling_mult:
             video_names_mult = []
@@ -257,9 +243,7 @@ class PNGRawDataset(VOSRawDataset):
         video_name = self.video_names[idx]
 
         if self.single_object_mode:
-            video_frame_root = os.path.join(
-                self.img_folder, os.path.dirname(video_name)
-            )
+            video_frame_root = os.path.join(self.img_folder, os.path.dirname(video_name))
         else:
             video_frame_root = os.path.join(self.img_folder, video_name)
 
@@ -268,9 +252,7 @@ class PNGRawDataset(VOSRawDataset):
         if self.is_palette:
             segment_loader = PalettisedPNGSegmentLoader(video_mask_root)
         else:
-            segment_loader = MultiplePNGSegmentLoader(
-                video_mask_root, self.single_object_mode
-            )
+            segment_loader = MultiplePNGSegmentLoader(video_mask_root, self.single_object_mode)
 
         all_frames = sorted(glob.glob(os.path.join(video_frame_root, "*.jpg")))
         if self.truncate_video > 0:
@@ -321,9 +303,7 @@ class SA1BRawDataset(VOSRawDataset):
             excluded_files = []
 
         # Check if it's not in excluded_files and it exists
-        self.video_names = [
-            video_name for video_name in subset if video_name not in excluded_files
-        ]
+        self.video_names = [video_name for video_name in subset if video_name not in excluded_files]
 
     def get_video(self, idx):
         """
@@ -388,9 +368,7 @@ class JSONRawDataset(VOSRawDataset):
 
             for excluded_videos_list_txt in excluded_videos_lists:
                 with open(excluded_videos_list_txt, "r") as f:
-                    excluded_files.extend(
-                        [os.path.splitext(line.strip())[0] for line in f]
-                    )
+                    excluded_files.extend([os.path.splitext(line.strip())[0] for line in f])
         excluded_files = set(excluded_files)
 
         # Read the subset defined in file_list_txt
@@ -400,9 +378,7 @@ class JSONRawDataset(VOSRawDataset):
         else:
             subset = os.listdir(self.img_folder)
 
-        self.video_names = sorted(
-            [video_name for video_name in subset if video_name not in excluded_files]
-        )
+        self.video_names = sorted([video_name for video_name in subset if video_name not in excluded_files])
 
     def get_video(self, video_idx):
         """
@@ -416,20 +392,9 @@ class JSONRawDataset(VOSRawDataset):
             frames_fps=self.frames_fps,
         )
 
-        frame_ids = [
-            int(os.path.splitext(frame_name)[0])
-            for frame_name in sorted(
-                os.listdir(os.path.join(self.img_folder, video_name))
-            )
-        ]
+        frame_ids = [int(os.path.splitext(frame_name)[0]) for frame_name in sorted(os.listdir(os.path.join(self.img_folder, video_name)))]
 
-        frames = [
-            VOSFrame(
-                frame_id,
-                image_path=os.path.join(
-                    self.img_folder, f"{video_name}/%05d.jpg" % (frame_id)
-                ),
-            )
+        frames = [VOSFrame(frame_id,image_path=os.path.join(self.img_folder, f"{video_name}/%05d.jpg" % (frame_id)),)
             for frame_id in frame_ids[:: self.sample_rate]
         ]
 
