@@ -481,7 +481,7 @@ class SAM2Train(SAM2Base):
                     keep_tokens_mask,
                 )
             else:
-                logging.warning("Skipping correction points at frame %s due to division.",frame_idx,) # FIXME
+                logging.debug("Skipping correction points at frame %s due to division.",frame_idx,) # FIXME
 
         # Adjust vision features based on token count changes
         current_vision_feats = self._adjust_vision_features(pix_feat.shape[0],current_out["pred_masks"].shape[0],current_vision_feats)

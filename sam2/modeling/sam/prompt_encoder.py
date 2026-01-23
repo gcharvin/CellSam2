@@ -14,14 +14,12 @@ from sam2.modeling.sam2_utils import LayerNorm2d
 
 
 class PromptEncoder(nn.Module):
-    def __init__(
-        self,
+    def __init__(self,
         embed_dim: int,
         image_embedding_size: Tuple[int, int],
         input_image_size: Tuple[int, int],
         mask_in_chans: int,
-        activation: Type[nn.Module] = nn.GELU,
-    ) -> None:
+        activation: Type[nn.Module] = nn.GELU,) -> None:
         """
         Encodes prompts for input to SAM's mask decoder.
 

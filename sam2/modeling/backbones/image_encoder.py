@@ -68,9 +68,7 @@ class FpnNeck(nn.Module):
         self.d_model = d_model
         for dim in backbone_channel_list:
             current = nn.Sequential()
-            current.add_module("conv",
-                nn.Conv2d(in_channels=dim,out_channels=d_model, kernel_size=kernel_size, stride=stride, padding=padding,),
-            )
+            current.add_module("conv",nn.Conv2d(in_channels=dim,out_channels=d_model, kernel_size=kernel_size, stride=stride, padding=padding,),)
 
             self.convs.append(current)
         self.fpn_interp_model = fpn_interp_model
