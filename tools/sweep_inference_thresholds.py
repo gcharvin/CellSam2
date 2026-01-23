@@ -98,9 +98,7 @@ def run_inference(video_dir, out_root, args, thresholds):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Sweep inference thresholds and evaluate division recall/FP."
-    )
+    parser = argparse.ArgumentParser(description="Sweep inference thresholds and evaluate division recall/FP.")
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--split", default="val/CTC")
     parser.add_argument("--videos", default="12,13,14")
@@ -129,13 +127,9 @@ def main():
     min_area_list = parse_list(args.min_area_list, int)
 
     rows = []
-    combos = itertools.product(
-        pred_iou_list, obj_score_list, div_score_list, box_nms_list, min_area_list
-    )
+    combos = itertools.product(pred_iou_list, obj_score_list, div_score_list, box_nms_list, min_area_list)
     for pred_iou, obj_score, div_score, box_nms, min_area in combos:
-        key = (
-            f"piou{pred_iou}_obj{obj_score}_div{div_score}_nms{box_nms}_min{min_area}"
-        )
+        key = (f"piou{pred_iou}_obj{obj_score}_div{div_score}_nms{box_nms}_min{min_area}")
         thresholds = {
             "key": key,
             "pred_iou_thresh": pred_iou,

@@ -40,14 +40,7 @@ class MaskDownSampler(nn.Module):
         for _ in range(num_layers):
             mask_out_chans = mask_in_chans * (stride**2)
             self.encoder.append(
-                nn.Conv2d(
-                    mask_in_chans,
-                    mask_out_chans,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=padding,
-                )
-            )
+                nn.Conv2d(mask_in_chans, mask_out_chans, kernel_size=kernel_size, stride=stride, padding=padding,))
             self.encoder.append(LayerNorm2d(mask_out_chans))
             self.encoder.append(activation())
             mask_in_chans = mask_out_chans
@@ -81,17 +74,9 @@ class CXBlock(nn.Module):
         use_dwconv=True,
     ):
         super().__init__()
-        self.dwconv = nn.Conv2d(
-            dim,
-            dim,
-            kernel_size=kernel_size,
-            padding=padding,
-            groups=dim if use_dwconv else 1,
-        )  # depthwise conv
+        self.dwconv = nn.Conv2d(dim,dim,kernel_size=kernel_size,padding=padding, groups=dim if use_dwconv else 1,)  # depthwise conv
         self.norm = LayerNorm2d(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(
-            dim, 4 * dim
-        )  # pointwise/1x1 convs, implemented with linear layers
+        self.pwconv1 = nn.Linear(dim, 4 * dim)  # pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.gamma = (
@@ -136,14 +121,7 @@ class Fuser(nn.Module):
 
 
 class MemoryEncoder(nn.Module):
-    def __init__(
-        self,
-        out_dim,
-        mask_downsampler,
-        fuser,
-        position_encoding,
-        in_dim=256,  # in_dim of pix_feats
-    ):
+    def __init__(self, out_dim, mask_downsampler, fuser, position_encoding,in_dim=256,):  # in_dim of pix_feats
         super().__init__()
 
         self.mask_downsampler = mask_downsampler
@@ -155,12 +133,7 @@ class MemoryEncoder(nn.Module):
         if out_dim != in_dim:
             self.out_proj = nn.Conv2d(in_dim, out_dim, kernel_size=1)
 
-    def forward(
-        self,
-        pix_feat: torch.Tensor,
-        masks: torch.Tensor,
-        skip_mask_sigmoid: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self,pix_feat: torch.Tensor,masks: torch.Tensor,skip_mask_sigmoid: bool = False,) -> Tuple[torch.Tensor, torch.Tensor]:
         ## Process masks
         # sigmoid, so that less domain shift from gt masks which are bool
         if not skip_mask_sigmoid:

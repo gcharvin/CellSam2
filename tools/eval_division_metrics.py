@@ -49,15 +49,10 @@ def summarize_scores(y_true, y_score, threshold):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate division prediction metrics on a CTC split."
-    )
+    parser = argparse.ArgumentParser(description="Evaluate division prediction metrics on a CTC split.")
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument(
-        "--config",
-        default="sam2/configs/sam2.1_training/sam2.1_ctc_finetune.yaml",
-    )
+    parser.add_argument("--config",default="sam2/configs/sam2.1_training/sam2.1_ctc_finetune.yaml",)
     parser.add_argument("--split", default="val/CTC")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-frames", type=int, default=3)
@@ -82,13 +77,7 @@ def main():
         model = lora.model
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
-    load_state_dict_into_model(
-        ckpt["model"],
-        model,
-        strict=True,
-        ignore_missing_keys=None,
-        ignore_unexpected_keys=None,
-    )
+    load_state_dict_into_model(ckpt["model"], model, strict=True, ignore_missing_keys=None, ignore_unexpected_keys=None,)
 
     model.to(device)
     model.eval()

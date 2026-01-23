@@ -74,15 +74,7 @@ def best_iou_label(gt_mask, pred_mask, pred_label, iou_thresh):
     return best_label
 
 
-def match_predictions_to_gt(
-    gt_events,
-    pred_events,
-    gt_mask_dir,
-    pred_mask_dir,
-    gt_mask_prefix,
-    window,
-    iou_thresh,
-):
+def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir, gt_mask_prefix, window, iou_thresh,):
     gt_by_mother = {}
     for mother_id, frame_gt in gt_events:
         gt_by_mother.setdefault(mother_id, []).append(frame_gt)
@@ -136,9 +128,7 @@ def match_predictions_to_gt(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate division events with IoU-based ID matching and time window."
-    )
+    parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
     parser.add_argument("--gt-root", required=True)
     parser.add_argument("--pred-root", required=True)
     parser.add_argument("--videos", default="12,13,14")
@@ -160,15 +150,7 @@ def main():
         pred_dir = pred_root / vid
         gt_events = load_events_from_man_track(gt_dir / "man_track.txt")
         pred_events = load_events_from_res_track(pred_dir / "res_track.txt")
-        metrics = match_predictions_to_gt(
-            gt_events,
-            pred_events,
-            gt_dir,
-            pred_dir,
-            args.gt_mask_prefix,
-            args.window,
-            args.iou_thresh,
-        )
+        metrics = match_predictions_to_gt(gt_events,pred_events,gt_dir,pred_dir,args.gt_mask_prefix,args.window,args.iou_thresh,)
         results[vid] = metrics
         total["tp"] += metrics["tp"]
         total["fp"] += metrics["fp"]

@@ -54,9 +54,7 @@ def put_per_obj_mask(per_obj_mask, height, width):
     return mask
 
 
-def load_masks_from_dir(
-    input_mask_dir, video_name, frame_name, per_obj_png_file, allow_missing=False
-):
+def load_masks_from_dir(input_mask_dir, video_name, frame_name, per_obj_png_file, allow_missing=False):
     """Load masks from a directory as a dict of per-object masks."""
     if not per_obj_png_file:
         input_mask_path = os.path.join(input_mask_dir, video_name, f"{frame_name}.png")
@@ -95,17 +93,12 @@ def save_masks_to_dir(
     os.makedirs(os.path.join(output_mask_dir, video_name), exist_ok=True)
     if not per_obj_png_file:
         output_mask = put_per_obj_mask(per_obj_output_mask, height, width)
-        output_mask_path = os.path.join(
-            output_mask_dir, video_name, f"{frame_name}.png"
-        )
+        output_mask_path = os.path.join(output_mask_dir, video_name, f"{frame_name}.png")
         save_ann_png(output_mask_path, output_mask, output_palette)
     else:
         for object_id, object_mask in per_obj_output_mask.items():
             object_name = f"{object_id:03d}"
-            os.makedirs(
-                os.path.join(output_mask_dir, video_name, object_name),
-                exist_ok=True,
-            )
+            os.makedirs(os.path.join(output_mask_dir, video_name, object_name), exist_ok=True,)
             output_mask = object_mask.reshape(height, width).astype(np.uint8)
             output_mask_path = os.path.join(
                 output_mask_dir, video_name, object_name, f"{frame_name}.png"
@@ -134,9 +127,7 @@ def vos_inference(
         if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
     ]
     frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-    inference_state = predictor.init_state(
-        video_path=video_dir, async_loading_frames=False
-    )
+    inference_state = predictor.init_state(video_path=video_dir, async_loading_frames=False)
     height = inference_state["video_height"]
     width = inference_state["video_width"]
     input_palette = None
@@ -272,9 +263,7 @@ def vos_separate_inference_per_object(
         if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
     ]
     frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-    inference_state = predictor.init_state(
-        video_path=video_dir, async_loading_frames=False
-    )
+    inference_state = predictor.init_state(video_path=video_dir, async_loading_frames=False)
     height = inference_state["video_height"]
     width = inference_state["video_width"]
     input_palette = None
@@ -282,9 +271,7 @@ def vos_separate_inference_per_object(
     # collect all the object ids and their input masks
     inputs_per_object = defaultdict(dict)
     for idx, name in enumerate(frame_names):
-        if per_obj_png_file or os.path.exists(
-            os.path.join(input_mask_dir, video_name, f"{name}.png")
-        ):
+        if per_obj_png_file or os.path.exists(os.path.join(input_mask_dir, video_name, f"{name}.png")):
             per_obj_input_mask, input_palette = load_masks_from_dir(
                 input_mask_dir=input_mask_dir,
                 video_name=video_name,
@@ -331,11 +318,7 @@ def vos_separate_inference_per_object(
     output_palette = input_palette or DAVIS_PALETTE
     video_segments = {}  # video_segments contains the per-frame segmentation results
     for frame_idx in range(len(frame_names)):
-        scores = torch.full(
-            size=(len(object_ids), 1, height, width),
-            fill_value=-1024.0,
-            dtype=torch.float32,
-        )
+        scores = torch.full(size=(len(object_ids), 1, height, width), fill_value=-1024.0, dtype=torch.float32,)
         for i, object_id in enumerate(object_ids):
             if frame_idx in output_scores_per_object[object_id]:
                 scores[i] = torch.from_numpy(
@@ -344,10 +327,7 @@ def vos_separate_inference_per_object(
 
         if not per_obj_png_file:
             scores = predictor._apply_non_overlapping_constraints(scores)
-        per_obj_output_mask = {
-            object_id: (scores[i] > score_thresh).cpu().numpy()
-            for i, object_id in enumerate(object_ids)
-        }
+        per_obj_output_mask = {object_id: (scores[i] > score_thresh).cpu().numpy() for i, object_id in enumerate(object_ids)}
         video_segments[frame_idx] = per_obj_output_mask
 
     # write the output masks as palette PNG files to output_mask_dir
@@ -366,52 +346,22 @@ def vos_separate_inference_per_object(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--sam2_cfg",
-        type=str,
-        default="configs/sam2.1/sam2.1_hiera_b+.yaml",
-        help="SAM 2 model configuration file",
-    )
-    parser.add_argument(
-        "--sam2_checkpoint",
-        type=str,
-        default="./checkpoints/sam2.1_hiera_base_plus.pt",
-        help="path to the SAM 2 model checkpoint",
-    )
-    parser.add_argument(
-        "--base_video_dir",
-        type=str,
-        required=True,
-        help="directory containing videos (as JPEG files) to run VOS prediction on",
-    )
-    parser.add_argument(
-        "--input_mask_dir",
-        type=str,
-        required=True,
-        help="directory containing input masks (as PNG files) of each video",
-    )
-    parser.add_argument(
-        "--video_list_file",
-        type=str,
-        default=None,
-        help="text file containing the list of video names to run VOS prediction on",
-    )
-    parser.add_argument(
-        "--output_mask_dir",
-        type=str,
-        required=True,
-        help="directory to save the output masks (as PNG files)",
-    )
-    parser.add_argument(
-        "--score_thresh",
-        type=float,
-        default=0.0,
-        help="threshold for the output mask logits (default: 0.0)",
-    )
-    parser.add_argument(
-        "--use_all_masks",
-        action="store_true",
-        help="whether to use all available PNG files in input_mask_dir "
+    parser.add_argument("--sam2_cfg", type=str, default="configs/sam2.1/sam2.1_hiera_b+.yaml",
+        help="SAM 2 model configuration file")
+    parser.add_argument("--sam2_checkpoint", type=str, default="./checkpoints/sam2.1_hiera_base_plus.pt",
+        help="path to the SAM 2 model checkpoint",)
+    parser.add_argument("--base_video_dir", type=str, required=True,
+        help="directory containing videos (as JPEG files) to run VOS prediction on",)
+    parser.add_argument("--input_mask_dir", type=str, required=True,
+                        help="directory containing input masks (as PNG files) of each video")
+    parser.add_argument("--video_list_file", type=str, default=None,
+        help="text file containing the list of video names to run VOS prediction on",)
+    parser.add_argument("--output_mask_dir", type=str, required=True,
+        help="directory to save the output masks (as PNG files)",)
+    parser.add_argument("--score_thresh", type=float, default=0.0,
+        help="threshold for the output mask logits (default: 0.0)",)
+    parser.add_argument("--use_all_masks", action="store_true",
+                        help="whether to use all available PNG files in input_mask_dir "
         "(default without this flag: just the first PNG file as input to the SAM 2 model; "
         "usually we don't need this flag, since semi-supervised VOS evaluation usually takes input from the first frame only)",
     )

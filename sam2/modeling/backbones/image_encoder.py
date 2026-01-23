@@ -12,19 +12,13 @@ import torch.nn.functional as F
 
 
 class ImageEncoder(nn.Module):
-    def __init__(
-        self,
-        trunk: nn.Module,
-        neck: nn.Module,
-        scalp: int = 0,
-    ):
+    def __init__(self, trunk: nn.Module, neck: nn.Module, scalp: int = 0,):
         super().__init__()
         self.trunk = trunk
         self.neck = neck
         self.scalp = scalp
-        assert (
-            self.trunk.channel_list == self.neck.backbone_channel_list
-        ), f"Channel dims of trunk and neck do not match. Trunk: {self.trunk.channel_list}, neck: {self.neck.backbone_channel_list}"
+        assert (self.trunk.channel_list == self.neck.backbone_channel_list),\
+            f"Channel dims of trunk and neck do not match. Trunk: {self.trunk.channel_list}, neck: {self.neck.backbone_channel_list}"
 
     def forward(self, sample: torch.Tensor):
         # Forward through backbone
@@ -74,15 +68,8 @@ class FpnNeck(nn.Module):
         self.d_model = d_model
         for dim in backbone_channel_list:
             current = nn.Sequential()
-            current.add_module(
-                "conv",
-                nn.Conv2d(
-                    in_channels=dim,
-                    out_channels=d_model,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=padding,
-                ),
+            current.add_module("conv",
+                nn.Conv2d(in_channels=dim,out_channels=d_model, kernel_size=kernel_size, stride=stride, padding=padding,),
             )
 
             self.convs.append(current)
@@ -117,9 +104,7 @@ class FpnNeck(nn.Module):
                     prev_features.to(dtype=torch.float32),
                     scale_factor=2.0,
                     mode=self.fpn_interp_model,
-                    align_corners=(
-                        None if self.fpn_interp_model == "nearest" else False
-                    ),
+                    align_corners=(None if self.fpn_interp_model == "nearest" else False),
                     antialias=False,
                 )
                 prev_features = lateral_features + top_down_features
