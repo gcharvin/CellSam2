@@ -93,14 +93,8 @@ class MemoryAttentionLayer(nn.Module):
 
 
 class MemoryAttention(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        pos_enc_at_input: bool,
-        layer: nn.Module,
-        num_layers: int,
-        batch_first: bool = True,  # Do layers expect batch first input?
-    ):
+    def __init__(self, d_model: int,pos_enc_at_input: bool,layer: nn.Module, num_layers: int, batch_first: bool = True,):
+        # Do layers expect batch first input?
         super().__init__()
         self.d_model = d_model
         self.layers = get_clones(layer, num_layers)

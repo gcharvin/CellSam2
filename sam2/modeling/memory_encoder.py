@@ -64,26 +64,14 @@ class CXBlock(nn.Module):
         layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
     """
 
-    def __init__(
-        self,
-        dim,
-        kernel_size=7,
-        padding=3,
-        drop_path=0.0,
-        layer_scale_init_value=1e-6,
-        use_dwconv=True,
-    ):
+    def __init__(self,dim,kernel_size=7,padding=3,drop_path=0.0,layer_scale_init_value=1e-6,use_dwconv=True,):
         super().__init__()
         self.dwconv = nn.Conv2d(dim,dim,kernel_size=kernel_size,padding=padding, groups=dim if use_dwconv else 1,)  # depthwise conv
         self.norm = LayerNorm2d(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim)  # pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = (
-            nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True)
-            if layer_scale_init_value > 0
-            else None
-        )
+        self.gamma =  nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True) if layer_scale_init_value > 0  else None
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):

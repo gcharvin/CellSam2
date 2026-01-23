@@ -28,12 +28,7 @@ sam2_checkpoint = "checkpoints/sam2.1_hiera_base_plus.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
 # Build video predictor with vos_optimized=True setting
-predictor = build_sam2_video_predictor(
-    model_cfg, sam2_checkpoint, device=device, vos_optimized=True
-)
-
-
-# Initialize with video
+predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device, vos_optimized=True) # Initialize with video
 video_dir = "notebooks/videos/bedroom"
 # scan all the JPEG frame names in this directory
 frame_names = [
@@ -74,11 +69,7 @@ with torch.autocast("cuda", torch.bfloat16):
         for i in tqdm(range(runs), disable=not verbose, desc="Benchmarking"):
             start = time.time()
             # Start tracking
-            for (
-                out_frame_idx,
-                out_obj_ids,
-                out_mask_logits,
-            ) in predictor.propagate_in_video(inference_state):
+            for (out_frame_idx,out_obj_ids,out_mask_logits,) in predictor.propagate_in_video(inference_state):
                 pass
 
             end = time.time()

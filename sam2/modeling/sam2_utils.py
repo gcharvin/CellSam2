@@ -335,11 +335,7 @@ def get_next_point(gt_masks, pred_masks, method, is_bkgd_mask=None, bkgd_mask=No
     else:
         raise ValueError(f"unknown sampling method {method}")
 
-def get_background_masks(
-    data_batch, 
-    frame_idx: int, 
-    return_mask_flags_only: bool = False
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def get_background_masks(data_batch,frame_idx: int,return_mask_flags_only: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Retrieves background masks for objects at a specific frame index.
 

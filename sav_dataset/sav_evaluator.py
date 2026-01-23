@@ -42,48 +42,19 @@ The structure of the {GT_ROOT} can be either of the follow two structures.
 
 
 parser = ArgumentParser()
-parser.add_argument(
-    "--gt_root",
-    required=True,
-    help="Path to the GT folder. For SA-V, it's sav_val/Annotations_6fps or sav_test/Annotations_6fps",
-)
-parser.add_argument(
-    "--pred_root",
-    required=True,
-    help="Path to a folder containing folders of masks to be evaluated, with exactly the same structure as gt_root",
-)
-parser.add_argument(
-    "-n", "--num_processes", default=16, type=int, help="Number of concurrent processes"
-)
-parser.add_argument(
-    "-s",
-    "--strict",
-    help="Make sure every video in the gt_root folder has a corresponding video in the prediction",
-    action="store_true",
-)
-parser.add_argument(
-    "-q",
-    "--quiet",
-    help="Quietly run evaluation without printing the information out",
-    action="store_true",
-)
+parser.add_argument("--gt_root",required=True,help="Path to the GT folder. For SA-V, it's sav_val/Annotations_6fps or sav_test/Annotations_6fps",)
+parser.add_argument("--pred_root",required=True,help="Path to a folder containing folders of masks to be evaluated, with exactly the same structure as gt_root",)
+parser.add_argument("-n", "--num_processes", default=16, type=int, help="Number of concurrent processes")
+parser.add_argument("-s","--strict",help="Make sure every video in the gt_root folder has a corresponding video in the prediction",action="store_true",)
+parser.add_argument("-q","--quiet", help="Quietly run evaluation without printing the information out", action="store_true",)
 
 # https://github.com/davisvideochallenge/davis2017-evaluation/blob/d34fdef71ce3cb24c1a167d860b707e575b3034c/davis2017/evaluation.py#L85
-parser.add_argument(
-    "--do_not_skip_first_and_last_frame",
-    help="In SA-V val and test, we skip the first and the last annotated frames in evaluation. "
-    "Set this to true for evaluation on settings that doesn't skip first and last frames",
-    action="store_true",
-)
+parser.add_argument(    "--do_not_skip_first_and_last_frame", action="store_true",
+                        help="In SA-V val and test, we skip the first and the last annotated frames in evaluation. "
+                             "Set this to true for evaluation on settings that doesn't skip first and last frames")
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    benchmark(
-        [args.gt_root],
-        [args.pred_root],
-        args.strict,
-        args.num_processes,
-        verbose=not args.quiet,
-        skip_first_and_last=not args.do_not_skip_first_and_last_frame,
-    )
+    benchmark([args.gt_root],[args.pred_root],args.strict, args.num_processes,
+              verbose=not args.quiet, skip_first_and_last=not args.do_not_skip_first_and_last_frame,)
