@@ -32,9 +32,7 @@ def main(cfg: DictConfig) -> None:
     global model_name
 
     if cfg.launcher.experiment_log_dir is None:
-        cfg.launcher.experiment_log_dir = os.path.join(
-            os.getcwd(), "sam2_logs", model_name
-        )
+        cfg.launcher.experiment_log_dir = os.path.join(os.getcwd(), "sam2_logs", model_name)
     else:
         model_name = cfg.launcher.experiment_log_dir.split("/")[-1]
 
@@ -77,17 +75,13 @@ def main(cfg: DictConfig) -> None:
 
     # add_pythonpath_to_sys_path()
     makedir(cfg.launcher.experiment_log_dir)
-    with g_pathmgr.open(
-        os.path.join(cfg.launcher.experiment_log_dir, "config.yaml"), "w"
-    ) as f:
+    with g_pathmgr.open(os.path.join(cfg.launcher.experiment_log_dir, "config.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(cfg))
 
     cfg_resolved = OmegaConf.to_container(cfg, resolve=False)
     cfg_resolved = OmegaConf.create(cfg_resolved)
 
-    with g_pathmgr.open(
-        os.path.join(cfg.launcher.experiment_log_dir, "config_resolved.yaml"), "w"
-    ) as f:
+    with g_pathmgr.open(os.path.join(cfg.launcher.experiment_log_dir, "config_resolved.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(cfg_resolved, resolve=True))
 
     local_rank = 0

@@ -907,7 +907,7 @@ class SAM2Base(torch.nn.Module):
                         prev_frame_idx = idx
                         break
                 if prev_frame_idx is None:
-                    logging.warning(f"Mother ID {mother_id_item} has no memory before frame {frame_idx}")
+                    logging.debug(f"Mother ID {mother_id_item} has no memory before frame {frame_idx}")
                     continue
                 
                 # Transfer mother's memory to daughters
