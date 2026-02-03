@@ -68,6 +68,60 @@ def parse_args():
         help="Minimum area for keeping masks",
     )
     parser.add_argument(
+        "--bud_centric",
+        type=bool,
+        default=True,
+        help="Whether to use bud-centric lineage assignment",
+    )
+    parser.add_argument(
+        "--bud_min_frames",
+        type=int,
+        default=2,
+        help="Minimum frames for a bud to be considered stable",
+    )
+    parser.add_argument(
+        "--bud_cooldown_frames",
+        type=int,
+        default=5,
+        help="Cooldown frames preventing multiple buds from the same mother",
+    )
+    parser.add_argument(
+        "--bud_max_distance",
+        type=float,
+        default=None,
+        help="Max centroid distance (pixels) for bud-mother candidates",
+    )
+    parser.add_argument(
+        "--bud_interface_radius",
+        type=int,
+        default=4,
+        help="Radius (pixels) for bud/mother interface scoring",
+    )
+    parser.add_argument(
+        "--bud_min_score",
+        type=float,
+        default=0.05,
+        help="Minimum score to accept bud-mother pairing",
+    )
+    parser.add_argument(
+        "--bud_score_adj_weight",
+        type=float,
+        default=1.0,
+        help="Weight for interface adjacency in bud-mother scoring",
+    )
+    parser.add_argument(
+        "--bud_score_dist_weight",
+        type=float,
+        default=0.5,
+        help="Weight for centroid distance in bud-mother scoring",
+    )
+    parser.add_argument(
+        "--bud_dist_scale",
+        type=float,
+        default=50.0,
+        help="Distance scale for bud-mother scoring",
+    )
+    parser.add_argument(
         "--segment",
         action="store_true",
         help="Whether to perform segmentation (default: False)",
@@ -172,6 +226,15 @@ def main():
         min_mask_area=args.min_mask_area,
         segment=args.segment,
         use_heatmap=args.use_heatmap,
+        bud_centric=args.bud_centric,
+        bud_min_frames=args.bud_min_frames,
+        bud_cooldown_frames=args.bud_cooldown_frames,
+        bud_max_distance=args.bud_max_distance,
+        bud_interface_radius=args.bud_interface_radius,
+        bud_min_score=args.bud_min_score,
+        bud_score_adj_weight=args.bud_score_adj_weight,
+        bud_score_dist_weight=args.bud_score_dist_weight,
+        bud_dist_scale=args.bud_dist_scale,
     )
 
     # Get input path

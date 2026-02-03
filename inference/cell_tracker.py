@@ -2,6 +2,7 @@ import cv2
 import logging
 import numpy as np
 import torch
+from typing import Dict, List, Optional, Tuple
 from torchvision.ops import batched_nms
 from tqdm import tqdm
 
@@ -33,6 +34,15 @@ class SAM2AutomaticCellTracker:
         segment: bool = False,
         use_heatmap: bool = False,
         min_mask_area: int = 10,
+        bud_centric: bool = True,
+        bud_min_frames: int = 2,
+        bud_cooldown_frames: int = 5,
+        bud_max_distance: Optional[float] = None,
+        bud_interface_radius: int = 4,
+        bud_score_adj_weight: float = 1.0,
+        bud_score_dist_weight: float = 0.5,
+        bud_min_score: float = 0.05,
+        bud_dist_scale: float = 50.0,
     ) -> None:
         """Using a SAM 2 model, generates and tracks masks for an entire video.
         Generates a grid of point prompts over the first frame, then tracks the detected cells
@@ -80,6 +90,16 @@ class SAM2AutomaticCellTracker:
         self.use_heatmap = use_heatmap
         # Bud masks can be small in the asymmetric setting, so keep a low area cutoff.
         self.min_mask_area = min_mask_area
+        # Bud-centric lineage assignment settings (inference-only).
+        self.bud_centric = bud_centric
+        self.bud_min_frames = bud_min_frames
+        self.bud_cooldown_frames = bud_cooldown_frames
+        self.bud_max_distance = bud_max_distance
+        self.bud_interface_radius = bud_interface_radius
+        self.bud_score_adj_weight = bud_score_adj_weight
+        self.bud_score_dist_weight = bud_score_dist_weight
+        self.bud_min_score = bud_min_score
+        self.bud_dist_scale = bud_dist_scale
 
         self._transforms = SAM2Transforms(
             resolution=self.model.image_size,
@@ -284,6 +304,9 @@ class SAM2AutomaticCellTracker:
             tracking_results.append(track_mask)
 
             self.save_ctc(track_mask, frame_idx, inference_state)
+
+        if self.bud_centric and not self.segment:
+            self.assign_bud_parentage_global(inference_state, tracking_results)
 
         return tracking_results
 
@@ -715,10 +738,26 @@ class SAM2AutomaticCellTracker:
             is_dividing,
         ) = sam_outputs
 
-        #
+        # Bud-centric inference: ignore division-based bud generation and keep only
+        # the mother mask for dividing cells (if any).
+        if self.bud_centric and is_dividing is not None and is_dividing.any():
+            (
+                high_res_masks,
+                low_res_masks,
+                ious,
+                obj_ptr,
+                object_score_logits_dict,
+            ) = self._filter_division_outputs_for_bud_centric(
+                high_res_masks,
+                low_res_masks,
+                ious,
+                obj_ptr,
+                object_score_logits_dict,
+                is_dividing,
+            )
+            is_dividing = None
+
         save_masks = torch.zeros_like(high_res_masks)
-        # Track division pairs whose mask order is swapped to preserve mother continuity.
-        swapped_div_indices = set()
 
         # Keep only largest connected component for each mask
         for i in range(high_res_masks.shape[0]):
@@ -745,55 +784,6 @@ class SAM2AutomaticCellTracker:
                     save_masks[i, 0][high_res_masks[i, 0] > self.mask_threshold] = (
                         high_res_masks[i, 0][high_res_masks[i, 0] > self.mask_threshold]
                     )
-
-                # Get max scores across all masks for each pixel
-        if obj_ids is not None and is_dividing is not None and is_dividing.any():
-            # Swap division masks so the "mother" stays temporally consistent with its prior mask.
-            prev_masks = inference_state.get("prev_masks")
-            prev_obj_ids = inference_state.get("prev_obj_ids")
-            if prev_masks is not None and prev_obj_ids is not None:
-                prev_masks = prev_masks.to(high_res_masks.device)
-                prev_obj_ids = prev_obj_ids.to(high_res_masks.device)
-                non_div_count = int((~is_dividing).sum().item())
-                div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
-
-                def swap_mask_pair(idx0, idx1):
-                    high_res_masks[[idx0, idx1]] = high_res_masks[[idx1, idx0]]
-                    low_res_masks[[idx0, idx1]] = low_res_masks[[idx1, idx0]]
-                    save_masks[[idx0, idx1]] = save_masks[[idx1, idx0]]
-                    ious[[idx0, idx1]] = ious[[idx1, idx0]]
-                    obj_ptr[[idx0, idx1]] = obj_ptr[[idx1, idx0]]
-                    for key, value in object_score_logits_dict.items():
-                        if value.shape[0] == high_res_masks.shape[0]:
-                            object_score_logits_dict[key][[idx0, idx1]] = value[
-                                [idx1, idx0]
-                            ]
-
-                for div_counter, obj_idx in enumerate(div_indices.tolist()):
-                    mother_id = obj_ids[obj_idx]
-                    prev_idx = torch.nonzero(prev_obj_ids == mother_id, as_tuple=True)[
-                        0
-                    ]
-                    if prev_idx.numel() == 0:
-                        continue
-                    prev_mask = prev_masks[prev_idx[0], 0] > self.mask_threshold
-                    mask_idx0 = non_div_count + 2 * div_counter
-                    mask_idx1 = mask_idx0 + 1
-                    cand0 = save_masks[mask_idx0, 0] > self.mask_threshold
-                    cand1 = save_masks[mask_idx1, 0] > self.mask_threshold
-
-                    inter0 = (cand0 & prev_mask).sum()
-                    union0 = (cand0 | prev_mask).sum()
-                    iou0 = inter0.float() / union0.float() if union0 > 0 else 0.0
-
-                    inter1 = (cand1 & prev_mask).sum()
-                    union1 = (cand1 | prev_mask).sum()
-                    iou1 = inter1.float() / union1.float() if union1 > 0 else 0.0
-
-                    # Swap if the second mask is more consistent with the previous mother.
-                    if iou1 > iou0:
-                        swap_mask_pair(mask_idx0, mask_idx1)
-                        swapped_div_indices.add(int(obj_idx))
         argmax_scores = torch.max(save_masks[:, 0], dim=0)[1]  # shape: (H, W)
         # Count pixels for each mask index (excluding background)
         valid_mask = save_masks[:, 0].sum(0) > 0
@@ -881,45 +871,16 @@ class SAM2AutomaticCellTracker:
             }
             inference_state["lost_high_res_masks"] = {}
         else:
-            # Build post-division object IDs in the same order as SAM masks.
+            # Bud-centric tracking: keep existing IDs and do not mint new IDs from
+            # division scores. Bud lineage is assigned globally after tracking.
             prev_obj_ids = obj_ids.clone()
-            mother_ids = obj_ids[is_dividing]
+            mother_ids = prev_obj_ids.new_zeros(0, dtype=torch.int32)
             daughter_ids_list = prev_obj_ids.new_zeros(
                 (len(prev_obj_ids), 2), dtype=torch.int32
             )
 
-            non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
-            div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
-
-            obj_ids_for_masks = []
-            for idx in non_div_indices.tolist():
-                obj_ids_for_masks.append(int(obj_ids[idx].item()))
-
-            bud_ids = []
-            non_div_count = len(non_div_indices)
-            for div_counter, idx in enumerate(div_indices.tolist()):
-                mother_id = int(obj_ids[idx].item())
-                # Asymmetric division: keep the mother ID and mint a new bud ID.
-                bud_id = inference_state["max_obj_id"] + 1 + div_counter
-                bud_ids.append(bud_id)
-                daughter_ids_list[idx, 0] = bud_id
-
-                mask_idx0 = non_div_count + 2 * div_counter
-                mask_idx1 = mask_idx0 + 1
-
-                # Keep IDs aligned with any continuity-based swap in mask order.
-                if idx in swapped_div_indices:
-                    obj_ids_for_masks.extend([bud_id, mother_id])
-                else:
-                    obj_ids_for_masks.extend([mother_id, bud_id])
-
-            obj_ids = torch.tensor(
-                obj_ids_for_masks, device=self.device, dtype=torch.int32
-            )
-
             # Now filter based on NMS results
             lost_obj_ids = obj_ids[valid_next_frame_mask * (~keep_tokens)]
-            # If cell divided but is lost through NMS, we remove from error correction as this gets overly complicated
             lost_obj_ids = [obj_id for obj_id in lost_obj_ids if obj_id in prev_obj_ids]
             inference_state["lost_obj_ids"][frame_idx] = lost_obj_ids
             if len(lost_obj_ids) > 0:
@@ -941,23 +902,6 @@ class SAM2AutomaticCellTracker:
             parent_ids = torch.zeros(
                 len(obj_ids), device=self.device, dtype=torch.int32
             )
-
-            # Update parent IDs for buds that survived NMS, preserving mother IDs in asym mode.
-            for div_idx, mother_id in enumerate(mother_ids.tolist()):
-                mother_id = int(mother_id)
-                bud_id = bud_ids[div_idx]
-                mother_present = bool((obj_ids == mother_id).any())
-                bud_present = bool((obj_ids == bud_id).any())
-
-                if bud_present and mother_present:
-                    parent_ids[obj_ids == bud_id] = mother_id
-                elif bud_present and not mother_present:
-                    # If mother was dropped but bud survived, keep the mother ID to avoid ID churn.
-                    obj_ids[obj_ids == bud_id] = mother_id
-                    daughter_ids_list[div_indices[div_idx], 0] = 0
-                else:
-                    # Bud was dropped.
-                    daughter_ids_list[div_indices[div_idx], 0] = 0
 
             inference_state["obj_ids"][frame_idx] = obj_ids
             inference_state["max_obj_id"] = max(
@@ -1039,6 +983,281 @@ class SAM2AutomaticCellTracker:
             inference_state["prev_obj_ids"] = obj_ids.detach()
 
         return inference_state, track_mask
+
+    def _filter_division_outputs_for_bud_centric(
+        self,
+        high_res_masks,
+        low_res_masks,
+        ious,
+        obj_ptr,
+        object_score_logits_dict,
+        is_dividing,
+    ):
+        num_non_div = int((~is_dividing).sum().item())
+        num_div = int(is_dividing.sum().item())
+        expected_len = num_non_div + 2 * num_div
+        if high_res_masks.shape[0] != expected_len:
+            logger.warning(
+                "Bud-centric filter skipped: unexpected mask count (got=%s expected=%s).",
+                high_res_masks.shape[0],
+                expected_len,
+            )
+            return high_res_masks, low_res_masks, ious, obj_ptr, object_score_logits_dict
+
+        keep_indices = list(range(num_non_div))
+        div_start = num_non_div
+        keep_indices.extend(div_start + 2 * i for i in range(num_div))
+        keep_indices = torch.tensor(
+            keep_indices, device=high_res_masks.device, dtype=torch.long
+        )
+
+        high_res_masks = high_res_masks.index_select(0, keep_indices)
+        low_res_masks = low_res_masks.index_select(0, keep_indices)
+        ious = ious.index_select(0, keep_indices)
+        obj_ptr = obj_ptr.index_select(0, keep_indices)
+
+        filtered_scores = {}
+        for key, value in object_score_logits_dict.items():
+            if value is None or value.shape[0] != expected_len:
+                filtered_scores[key] = value
+            else:
+                filtered_scores[key] = value.index_select(0, keep_indices)
+
+        return high_res_masks, low_res_masks, ious, obj_ptr, filtered_scores
+
+    def _compute_single_centroid(
+        self, mask: np.ndarray
+    ) -> Optional[Tuple[float, float]]:
+        ys, xs = np.where(mask)
+        if ys.size == 0:
+            return None
+        return float(xs.mean()), float(ys.mean())
+
+    def _compute_centroids(self, label_map: np.ndarray) -> Dict[int, Tuple[float, float]]:
+        flat = label_map.ravel()
+        valid = flat > 0
+        if not np.any(valid):
+            return {}
+
+        ids = flat[valid].astype(np.int64)
+        max_id = int(ids.max())
+        y_idx, x_idx = np.indices(label_map.shape)
+        y_flat = y_idx.ravel()[valid]
+        x_flat = x_idx.ravel()[valid]
+
+        counts = np.bincount(ids, minlength=max_id + 1)
+        sum_x = np.bincount(ids, weights=x_flat, minlength=max_id + 1)
+        sum_y = np.bincount(ids, weights=y_flat, minlength=max_id + 1)
+
+        centroids = {}
+        for obj_id in np.nonzero(counts)[0]:
+            if obj_id == 0:
+                continue
+            centroids[int(obj_id)] = (
+                float(sum_x[obj_id] / counts[obj_id]),
+                float(sum_y[obj_id] / counts[obj_id]),
+            )
+
+        return centroids
+
+    def _get_interface_kernel(self):
+        radius = max(0, int(self.bud_interface_radius))
+        if radius <= 0:
+            return None
+        if not hasattr(self, "_interface_kernel_cache"):
+            self._interface_kernel_cache = {}
+        kernel = self._interface_kernel_cache.get(radius)
+        if kernel is None:
+            size = 2 * radius + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+            self._interface_kernel_cache[radius] = kernel
+        return kernel
+
+    def _score_bud_mother_pair(
+        self, bud_mask: np.ndarray, mother_mask: np.ndarray, centroid_dist: float
+    ) -> float:
+        bud_area = float(bud_mask.sum())
+        if bud_area == 0:
+            return 0.0
+
+        adj_ratio = 0.0
+        if self.bud_interface_radius > 0:
+            kernel = self._get_interface_kernel()
+            if kernel is not None:
+                dilated = cv2.dilate(mother_mask.astype(np.uint8), kernel, iterations=1)
+                interface = (dilated > 0) & bud_mask
+                adj_ratio = float(interface.sum()) / bud_area
+
+        dist_scale = max(1.0, float(self.bud_dist_scale))
+        dist_term = float(np.exp(-centroid_dist / dist_scale))
+
+        return (
+            self.bud_score_adj_weight * adj_ratio
+            + self.bud_score_dist_weight * dist_term
+        )
+
+    def _collect_tracks(self, tracking_results: List[np.ndarray]) -> Dict[int, Dict]:
+        track_info: Dict[int, Dict] = {}
+        for frame_idx, track_mask in enumerate(tracking_results):
+            cell_ids = np.unique(track_mask)
+            cell_ids = cell_ids[cell_ids != 0]
+            for cell_id in cell_ids.tolist():
+                info = track_info.get(cell_id)
+                if info is None:
+                    track_info[cell_id] = {
+                        "start": frame_idx,
+                        "end": frame_idx,
+                        "length": 1,
+                    }
+                else:
+                    info["end"] = frame_idx
+                    info["length"] += 1
+        return track_info
+
+    def _rebuild_res_track(self, inference_state, tracking_results: List[np.ndarray]):
+        res_track_map: Dict[int, List[int]] = {}
+
+        for frame_idx, track_mask in enumerate(tracking_results):
+            cell_ids = np.unique(track_mask)
+            cell_ids = cell_ids[cell_ids != 0]
+            if cell_ids.size == 0:
+                continue
+
+            obj_ids = inference_state["obj_ids"].get(frame_idx)
+            if obj_ids is None:
+                continue
+
+            parent_ids = inference_state["parent_ids"].get(frame_idx)
+            if parent_ids is None or len(parent_ids) != len(obj_ids):
+                parent_ids = torch.zeros(
+                    len(obj_ids), device=obj_ids.device, dtype=torch.int32
+                )
+
+            parent_lookup = {
+                int(cell_id): int(parent_id)
+                for cell_id, parent_id in zip(
+                    obj_ids.cpu().numpy(), parent_ids.cpu().numpy(), strict=False
+                )
+            }
+
+            for cell_id in cell_ids.tolist():
+                parent_id = parent_lookup.get(int(cell_id), 0)
+                entry = res_track_map.get(cell_id)
+                if entry is None:
+                    res_track_map[cell_id] = [cell_id, frame_idx, frame_idx, parent_id]
+                else:
+                    entry[2] = frame_idx
+
+        if res_track_map:
+            res_track = np.array(list(res_track_map.values()), dtype=np.int32)
+            res_track = res_track[np.argsort(res_track[:, 0])]
+        else:
+            res_track = np.zeros((0, 4), dtype=np.int32)
+
+        res_path = inference_state["res_path"]
+        np.savetxt(res_path / "res_track.txt", res_track, fmt="%d")
+        inference_state["res_track"] = res_track
+
+    def assign_bud_parentage_global(self, inference_state, tracking_results):
+        if not tracking_results:
+            return
+
+        track_info = self._collect_tracks(tracking_results)
+        bud_events = []
+        for obj_id, info in track_info.items():
+            if info["start"] == 0:
+                continue
+            if info["length"] < self.bud_min_frames:
+                continue
+            bud_events.append((obj_id, info["start"]))
+
+        if not bud_events:
+            self._rebuild_res_track(inference_state, tracking_results)
+            return
+
+        centroids_cache: Dict[int, Dict[int, Tuple[float, float]]] = {}
+        candidate_pairs = []
+
+        for bud_id, frame_idx in bud_events:
+            if frame_idx <= 0:
+                continue
+            bud_mask = tracking_results[frame_idx] == bud_id
+            if not bud_mask.any():
+                continue
+            bud_centroid = self._compute_single_centroid(bud_mask)
+            if bud_centroid is None:
+                continue
+
+            prev_mask = tracking_results[frame_idx - 1]
+            if frame_idx - 1 not in centroids_cache:
+                centroids_cache[frame_idx - 1] = self._compute_centroids(prev_mask)
+            prev_centroids = centroids_cache[frame_idx - 1]
+
+            for mother_id, mother_centroid in prev_centroids.items():
+                if mother_id == bud_id:
+                    continue
+                centroid_dist = float(
+                    np.hypot(
+                        bud_centroid[0] - mother_centroid[0],
+                        bud_centroid[1] - mother_centroid[1],
+                    )
+                )
+                if (
+                    self.bud_max_distance is not None
+                    and centroid_dist > self.bud_max_distance
+                ):
+                    continue
+                mother_mask = prev_mask == mother_id
+                if not mother_mask.any():
+                    continue
+                score = self._score_bud_mother_pair(
+                    bud_mask, mother_mask, centroid_dist
+                )
+                if score < self.bud_min_score:
+                    continue
+                candidate_pairs.append((score, bud_id, mother_id, frame_idx))
+
+        if not candidate_pairs:
+            self._rebuild_res_track(inference_state, tracking_results)
+            return
+
+        candidate_pairs.sort(key=lambda x: x[0], reverse=True)
+        assigned_buds = set()
+        mother_last_frame: Dict[int, int] = {}
+        bud_to_mother: Dict[int, int] = {}
+
+        for score, bud_id, mother_id, frame_idx in candidate_pairs:
+            if bud_id in assigned_buds:
+                continue
+            last_frame = mother_last_frame.get(mother_id)
+            if last_frame is not None and (
+                frame_idx - last_frame <= self.bud_cooldown_frames
+            ):
+                continue
+            bud_to_mother[int(bud_id)] = int(mother_id)
+            assigned_buds.add(bud_id)
+            mother_last_frame[mother_id] = frame_idx
+
+        for bud_id, mother_id in bud_to_mother.items():
+            event_frame = track_info[bud_id]["start"]
+            obj_ids = inference_state["obj_ids"].get(event_frame)
+            if obj_ids is None:
+                continue
+            parent_ids = inference_state["parent_ids"].get(event_frame)
+            if parent_ids is None or len(parent_ids) != len(obj_ids):
+                parent_ids = torch.zeros(
+                    len(obj_ids), device=obj_ids.device, dtype=torch.int32
+                )
+            else:
+                parent_ids = parent_ids.clone()
+
+            idx = torch.nonzero(obj_ids == bud_id, as_tuple=True)[0]
+            if idx.numel() > 0:
+                parent_ids[idx[0]] = int(mother_id)
+                inference_state["parent_ids"][event_frame] = parent_ids
+
+        inference_state["bud_parent_map"] = bud_to_mother
+        self._rebuild_res_track(inference_state, tracking_results)
 
     def postprocess_mask(self, masks, inference_state):
         pad_left, pad_right, pad_top, pad_bottom = inference_state["padding"]
