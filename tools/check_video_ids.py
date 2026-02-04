@@ -12,7 +12,7 @@ from IPython.display import Image
 def check_ids_mask_man_track(train_image_dir: Path, video_id: str):
     """Analyze a video and return its missing track IDs."""
 
-    MASK_DIR = train_image_dir / f"{video_id}_GT" / "SEG"
+    MASK_DIR = train_image_dir / f"{video_id}_GT" / "TRA"  # SEG folder is useless
     MAN_TRACK_FILE_PATH = train_image_dir / f"{video_id}_GT" / "TRA" / "man_track.txt"
 
     if not MASK_DIR.exists() or not MAN_TRACK_FILE_PATH.exists():
