@@ -864,7 +864,24 @@ class SAM2Base(torch.nn.Module):
         daughter_ids_list,
     ):
         """Update memory features for temporal tracking."""
+        # avant la dernière mémoire de la mère doit être exactement au frame t-1
+        # copie de toute la mémoire
+        #         Hypothèses implicites :
+        #
+        # pas d’occlusion
+        # pas de suppression par NMS
+        # pas de tracking partiel
+        # pas de heatmap detection intermédiaire
+        #
+        # ➡️ Dès qu’un de ces cas arrive → héritage cassé
+        # 👉 La nouvelle version ne change pas la filiation mère → bourgeon,
+        # 👉 elle corrige la façon dont la mémoire est héritée pour refléter la vraie continuité temporelle.
+        #
+        # C’est une correction algorithmique majeure, pas un refactoring cosmétique.
         # Encode current frame predictions into memory features
+        #   t-2 : mère OK
+        # t-1 : mère supprimée (NMS)
+        # t   : division détectée
         maskmem_features, maskmem_pos_enc = self._encode_memory_in_output(current_vision_feats, feat_sizes, point_inputs,run_mem_encoder,current_out)
         
         if maskmem_features is None or maskmem_pos_enc is None:
@@ -922,12 +939,15 @@ class SAM2Base(torch.nn.Module):
                         
                     # Prepend mother's last memory to daughter's memory
                     mother_frame = mother_frames[prev_frame_idx]
+
                     memory_dict[daughter_id_item]["mask_mem_features"] = torch.cat(
                         (memory_dict[mother_id_item]["mask_mem_features"][prev_frame_idx : prev_frame_idx + 1],
                             memory_dict[daughter_id_item]["mask_mem_features"],), dim=0,)
+
                     memory_dict[daughter_id_item]["obj_ptr"] = torch.cat((
                             memory_dict[mother_id_item]["obj_ptr"][prev_frame_idx : prev_frame_idx + 1],
                             memory_dict[daughter_id_item]["obj_ptr"],), dim=0,)
+
                     memory_dict[daughter_id_item]["frame_idx"].insert(0, mother_frame)
             except Exception as e:
                 logging.error(f"Error handling memory for mother ID {mother_id.item()}: {str(e)}")

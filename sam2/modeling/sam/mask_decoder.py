@@ -129,9 +129,7 @@ class MaskDecoder(nn.Module):
         self._debug_div = self._env_flag("SAM2_DEBUG_DIV")
         self._debug_div_eval = self._env_flag("SAM2_DEBUG_DIV_EVAL")
         self._debug_div_freq = int(os.environ.get("SAM2_DEBUG_DIV_FREQ", "50"))
-        self._debug_div_console = self._env_flag_default(
-            "SAM2_DEBUG_DIV_CONSOLE", True
-        )
+        self._debug_div_console = self._env_flag_default("SAM2_DEBUG_DIV_CONSOLE", True   )
         self._debug_div_step = 0
         self._debug_div_tb_dir = os.environ.get("SAM2_DEBUG_DIV_TB_DIR")
         self._debug_div_writer = None

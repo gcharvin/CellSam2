@@ -47,9 +47,7 @@ class VOSDataset(VisionDataset):
         # sample a video
         video, segment_loader = self.video_dataset.get_video(idx)
         # sample frames and object indices to be used in a datapoint
-        sampled_frms_and_objs = self.sampler.sample(
-            video, segment_loader, epoch=self.curr_epoch
-        )
+        sampled_frms_and_objs = self.sampler.sample(video, segment_loader, epoch=self.curr_epoch)
 
         datapoint = self.construct(video, sampled_frms_and_objs, segment_loader)
         for transform in self._transforms:
@@ -78,18 +76,14 @@ class VOSDataset(VisionDataset):
             )
             # We load the gt segments associated with the current frame
             if isinstance(segment_loader, JSONSegmentLoader):
-                segments = segment_loader.load(
-                    frame.frame_idx, obj_ids=sampled_object_ids
-                )
+                segments = segment_loader.load(frame.frame_idx, obj_ids=sampled_object_ids)
             else:
                 segments = segment_loader.load(frame.frame_idx)
 
             for obj_id in sampled_object_ids:
                 # Extract the segment
                 if obj_id in segments:
-                    assert (
-                        segments[obj_id] is not None
-                    ), "None targets are not supported"
+                    assert (segments[obj_id] is not None), "None targets are not supported"
                     # segment is uint8 and remains uint8 throughout the transforms
                     segment = segments[obj_id].to(torch.uint8)
                 else:
@@ -116,27 +110,18 @@ class VOSDataset(VisionDataset):
                         entering = bool(start_frame == frame.frame_idx)
 
                         # Budding: daughters appear when their start frame matches this frame
-                        daughter_rows = man_track[
-                            (man_track[:,3] == obj_id) & (man_track[:,1] == frame.frame_idx)
-                        ]
+                        daughter_rows = man_track[(man_track[:,3] == obj_id) & (man_track[:,1] == frame.frame_idx)]
                         if len(daughter_rows) > 0:
-                            raw_ids = torch.as_tensor(
-                                daughter_rows[:, 0], dtype=torch.int32
-                            )
+                            raw_ids = torch.as_tensor(daughter_rows[:, 0], dtype=torch.int32)
                             if raw_ids.numel() >= 2:
                                 daughter_ids = raw_ids[:2]
                             elif raw_ids.numel() == 1:
-                                daughter_ids = torch.tensor(
-                                    [raw_ids.item(), 0], dtype=torch.int32
-                                )
+                                daughter_ids = torch.tensor([raw_ids.item(), 0], dtype=torch.int32)
                 
                 # Determine if this cell should be tracked in the next frame
                 if frame_idx < len(sampled_object_ids_list) - 1:
                     # Cell is in next frame's object list or has daughter cells
-                    is_in_next_object_ids_list = (
-                        obj_id in sampled_object_ids_list[frame_idx+1] or 
-                        daughter_ids.sum() > 0
-                    )
+                    is_in_next_object_ids_list = (obj_id in sampled_object_ids_list[frame_idx+1] or daughter_ids.sum() > 0)
 
                 images[frame_idx].objects.append(
                     Object(

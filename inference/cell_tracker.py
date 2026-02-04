@@ -6,10 +6,7 @@ from torchvision.ops import batched_nms
 from tqdm import tqdm
 
 from sam2.modeling.sam2_base import SAM2Base
-from sam2.utils.amg import (
-    MaskData,
-    batched_mask_to_box,
-)
+from sam2.utils.amg import MaskData,batched_mask_to_box
 from sam2.utils.misc import load_video_frames, read_image
 from sam2.utils.transforms import SAM2Transforms
 
@@ -504,7 +501,12 @@ class SAM2AutomaticCellTracker:
         features = (expanded_image,) + features
         return features
 
-    def update_cell_tracks(self,inference_state,frame_idx,sam_outputs,current_out,tracking_object_ids=None,heatmap_input=False,):
+    def update_cell_tracks(self,inference_state,
+                           frame_idx,
+                           sam_outputs,
+                           current_out,
+                           tracking_object_ids=None,
+                           heatmap_input=False,):
         """Update the cell tracks based on the current output and SAM outputs."""
         obj_ids = tracking_object_ids
 
@@ -581,6 +583,7 @@ class SAM2AutomaticCellTracker:
                         swap_mask_pair(mask_idx0, mask_idx1)
                         swapped_div_indices.add(int(obj_idx))
         argmax_scores = torch.max(save_masks[:, 0], dim=0)[1]  # shape: (H, W)
+
         # Count pixels for each mask index (excluding background)
         valid_mask = save_masks[:, 0].sum(0) > 0
         valid_indices = argmax_scores[valid_mask]

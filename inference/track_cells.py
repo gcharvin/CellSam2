@@ -22,12 +22,10 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Cell tracking with SAM2")
     # Defaults are relaxed to reduce FN divisions in asym/budding inference.
-    parser.add_argument("--video_path",type=str,default=None,
-        help="Path to video file or image sequence directory",)
+    parser.add_argument("--video_path",type=str,default=None, help="Path to video file or image sequence directory",)
     parser.add_argument("--res_path", type=str, default=None, help="Path to save tracking results")
     parser.add_argument("--model_name",type=str,default="SAM2-tracking-LoRA-heatmap",help="Name of the model to use",)
-    parser.add_argument("--box_nms_thresh",type=float,default=0.7,help="Non-maximum suppression threshold for bounding boxes",
-    )
+    parser.add_argument("--box_nms_thresh",type=float,default=0.7,help="Non-maximum suppression threshold for bounding boxes",)
     parser.add_argument("--pred_iou_thresh",type=float,default=0.3,help="IoU threshold for predictions",)
     parser.add_argument("--obj_score_thresh",type=float,default=0.0,help="Object score threshold (logit)",)
     parser.add_argument("--div_obj_score_thresh",type=float,default=-4.0,help="Division score threshold (logit)",)

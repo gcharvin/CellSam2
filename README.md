@@ -3,6 +3,9 @@
 # PNRIA
  python train_ctc.py   launcher.experiment_log_dir=sam2_logs/CellSam2-tracking   scratch.dataset_name=moma  dataset.data_dir=/home/hcourtei/Projects/Cell_proj/data/moma_N_3_checked/moma
 
+CTC format
+https://public.celltrackingchallenge.net/documents/Naming%20and%20file%20content%20conventions.pdf
+
 
 # merge videos
 

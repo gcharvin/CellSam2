@@ -6,7 +6,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from sam2.utils.misc import read_image
-from training.dataset.vos_raw_dataset import CTCRawDataset
 from training.dataset.vos_segment_loader import CTCSegmentLoader
 
 # Utility to audit asymmetric lineage (mother/bud) in CTC man_track files.
@@ -74,15 +73,11 @@ def check_asym_lineage(split_dir: Path, max_videos: int, max_events: int):
         for ev in events:
             mother_rows = man_track[man_track[:, 0] == ev["mother_id"]]
             if len(mother_rows) == 0:
-                errors.append(
-                    f"{video_dir.name}: missing mother {ev['mother_id']} for bud {ev['bud_id']}"
-                )
+                errors.append(f"{video_dir.name}: missing mother {ev['mother_id']} for bud {ev['bud_id']}")
                 continue
             mother_start, mother_end = mother_rows[0, 1], mother_rows[0, 2]
             if ev["bud_id"] == ev["mother_id"]:
-                errors.append(
-                    f"{video_dir.name}: bud {ev['bud_id']} equals mother id"
-                )
+                errors.append(f"{video_dir.name}: bud {ev['bud_id']} equals mother id")
             if mother_end < ev["start_frame"]:
                 errors.append(
                     f"{video_dir.name}: mother {ev['mother_id']} ends at {mother_end} before bud {ev['bud_id']} starts at {ev['start_frame']}"
@@ -90,13 +85,9 @@ def check_asym_lineage(split_dir: Path, max_videos: int, max_events: int):
 
             segments = seg_loader.load(ev["start_frame"])
             if ev["mother_id"] not in segments:
-                errors.append(
-                    f"{video_dir.name}: mother {ev['mother_id']} missing mask at frame {ev['start_frame']}"
-                )
+                errors.append(f"{video_dir.name}: mother {ev['mother_id']} missing mask at frame {ev['start_frame']}")
             if ev["bud_id"] not in segments:
-                errors.append(
-                    f"{video_dir.name}: bud {ev['bud_id']} missing mask at frame {ev['start_frame']}"
-                )
+                errors.append( f"{video_dir.name}: bud {ev['bud_id']} missing mask at frame {ev['start_frame']}")
 
             checked += 1
             events_out.append({"video_dir": video_dir, **ev})
@@ -150,14 +141,8 @@ def make_visualization(event, split_dir: Path, out_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Audit asymmetric division logic and visualize a bud event."
-    )
-    parser.add_argument(
-        "--data-dir",
-        required=True,
-        help="Root dataset dir (e.g., .../trainingdataset/moma)",
-    )
+    parser = argparse.ArgumentParser(description="Audit asymmetric division logic and visualize a bud event.")
+    parser.add_argument("--data-dir",required=True,help="Root dataset dir (e.g., .../trainingdataset/moma)",)
     parser.add_argument("--split", default="train/CTC")
     parser.add_argument("--max-videos", type=int, default=5)
     parser.add_argument("--max-events", type=int, default=50)
@@ -166,9 +151,7 @@ def main():
     args = parser.parse_args()
 
     split_dir = Path(args.data_dir) / args.split
-    checked, errors, events = check_asym_lineage(
-        split_dir, args.max_videos, args.max_events
-    )
+    checked, errors, events = check_asym_lineage(split_dir, args.max_videos, args.max_events)
 
     print(f"Checked events: {checked}")
     if errors:

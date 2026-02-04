@@ -13,7 +13,7 @@ def load_mask(path: Path):
     return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
 
 
-def load_events_from_man_track(path: Path):
+def load_events_from_track(path: Path):
     if not path.exists() or path.stat().st_size == 0:
         return []
     data = np.loadtxt(path, dtype=np.int32)
@@ -28,21 +28,6 @@ def load_events_from_man_track(path: Path):
             events.append((int(parent_id), int(start_frame)))
     return events
 
-
-def load_events_from_res_track(path: Path):
-    if not path.exists() or path.stat().st_size == 0:
-        return []
-    data = np.loadtxt(path, dtype=np.int32)
-    if data.size == 0:
-        return []
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    events = []
-    for row in data:
-        obj_id, start_frame, _end_frame, parent_id = row.tolist()
-        if parent_id > 0:
-            events.append((int(parent_id), int(start_frame)))
-    return events
 
 
 def best_iou_label(gt_mask, pred_mask, pred_label, iou_thresh):
@@ -148,9 +133,15 @@ def main():
     for vid in video_ids:
         gt_dir = gt_root / f"{vid}_GT" / "TRA"
         pred_dir = pred_root / vid
-        gt_events = load_events_from_man_track(gt_dir / "man_track.txt")
-        pred_events = load_events_from_res_track(pred_dir / "res_track.txt")
-        metrics = match_predictions_to_gt(gt_events,pred_events,gt_dir,pred_dir,args.gt_mask_prefix,args.window,args.iou_thresh,)
+        gt_events = load_events_from_track(gt_dir / "man_track.txt")
+        pred_events = load_events_from_track(pred_dir / "res_track.txt")
+        metrics = match_predictions_to_gt(gt_events,
+                                          pred_events,
+                                          gt_dir,
+                                          pred_dir,
+                                          args.gt_mask_prefix,
+                                          args.window,
+                                          args.iou_thresh,)
         results[vid] = metrics
         total["tp"] += metrics["tp"]
         total["fp"] += metrics["fp"]
