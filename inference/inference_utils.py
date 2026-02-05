@@ -1,9 +1,6 @@
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -25,6 +22,15 @@ def get_video_path() -> Path:
         Path: Selected path to video file or image directory
 
     """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as exc:
+        raise RuntimeError(
+            "tkinter is required for GUI input selection. "
+            "Install python3-tk or pass --video_path explicitly."
+        ) from exc
+
     # Create and hide the root window
     root = tk.Tk()
     root.withdraw()
@@ -149,6 +155,8 @@ def get_tif_directories(base_path):
 
 
 def display_masks(image, masks):
+    import matplotlib.pyplot as plt
+
     plt.figure(figsize=(20, 20))
     plt.imshow(image)
     show_anns(masks)
@@ -157,6 +165,8 @@ def display_masks(image, masks):
 
 
 def show_anns(anns, borders=True, mask_alpha=0.1):
+    import matplotlib.pyplot as plt
+
     if len(anns) == 0:
         return
     sorted_anns = sorted(anns, key=(lambda x: x["area"]), reverse=True)

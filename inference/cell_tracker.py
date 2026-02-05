@@ -422,6 +422,13 @@ class SAM2AutomaticCellTracker:
 
                         # Convert to numpy and int
                         input_points_np = input_points.cpu().numpy().astype(np.int32)
+                        # Clamp points to valid image bounds to avoid OOB indexing
+                        input_points_np[:, 0, 0] = np.clip(
+                            input_points_np[:, 0, 0], 0, track_mask.shape[1] - 1
+                        )
+                        input_points_np[:, 0, 1] = np.clip(
+                            input_points_np[:, 0, 1], 0, track_mask.shape[0] - 1
+                        )
                         track_cell_ids = track_mask[
                             input_points_np[:, 0, 1], input_points_np[:, 0, 0]
                         ]
@@ -747,6 +754,7 @@ class SAM2AutomaticCellTracker:
                 ious,
                 obj_ptr,
                 object_score_logits_dict,
+                obj_ids,
             ) = self._filter_division_outputs_for_bud_centric(
                 high_res_masks,
                 low_res_masks,
@@ -754,6 +762,8 @@ class SAM2AutomaticCellTracker:
                 obj_ptr,
                 object_score_logits_dict,
                 is_dividing,
+                obj_ids=obj_ids,
+                inference_state=inference_state,
             )
             is_dividing = None
 
@@ -992,6 +1002,8 @@ class SAM2AutomaticCellTracker:
         obj_ptr,
         object_score_logits_dict,
         is_dividing,
+        obj_ids=None,
+        inference_state=None,
     ):
         num_non_div = int((~is_dividing).sum().item())
         num_div = int(is_dividing.sum().item())
@@ -1002,11 +1014,69 @@ class SAM2AutomaticCellTracker:
                 high_res_masks.shape[0],
                 expected_len,
             )
-            return high_res_masks, low_res_masks, ious, obj_ptr, object_score_logits_dict
+            return (
+                high_res_masks,
+                low_res_masks,
+                ious,
+                obj_ptr,
+                object_score_logits_dict,
+                obj_ids,
+            )
 
-        keep_indices = list(range(num_non_div))
         div_start = num_non_div
-        keep_indices.extend(div_start + 2 * i for i in range(num_div))
+        div_keep = [div_start + 2 * i for i in range(num_div)]
+        obj_ids_for_masks = None
+
+        if obj_ids is not None:
+            non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
+            div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
+            obj_ids_for_masks = []
+            for idx in non_div_indices.tolist():
+                obj_ids_for_masks.append(int(obj_ids[idx].item()))
+            for idx in div_indices.tolist():
+                mother_id = int(obj_ids[idx].item())
+                obj_ids_for_masks.extend([mother_id, mother_id])
+            obj_ids_for_masks = torch.tensor(
+                obj_ids_for_masks, device=obj_ids.device, dtype=obj_ids.dtype
+            )
+
+        if (
+            obj_ids is not None
+            and inference_state is not None
+            and num_div > 0
+        ):
+            prev_masks = inference_state.get("prev_masks")
+            prev_obj_ids = inference_state.get("prev_obj_ids")
+            if prev_masks is not None and prev_obj_ids is not None:
+                prev_masks = prev_masks.to(high_res_masks.device)
+                prev_obj_ids = prev_obj_ids.to(high_res_masks.device)
+                div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
+                div_keep = []
+                for div_counter, obj_idx in enumerate(div_indices.tolist()):
+                    mother_id = obj_ids[obj_idx]
+                    prev_idx = torch.nonzero(prev_obj_ids == mother_id, as_tuple=True)[
+                        0
+                    ]
+                    mask_idx0 = div_start + 2 * div_counter
+                    mask_idx1 = mask_idx0 + 1
+                    if prev_idx.numel() == 0:
+                        div_keep.append(mask_idx0)
+                        continue
+                    prev_mask = prev_masks[prev_idx[0], 0] > self.mask_threshold
+                    cand0 = high_res_masks[mask_idx0, 0] > self.mask_threshold
+                    cand1 = high_res_masks[mask_idx1, 0] > self.mask_threshold
+
+                    inter0 = (cand0 & prev_mask).sum()
+                    union0 = (cand0 | prev_mask).sum()
+                    iou0 = inter0.float() / union0.float() if union0 > 0 else 0.0
+
+                    inter1 = (cand1 & prev_mask).sum()
+                    union1 = (cand1 | prev_mask).sum()
+                    iou1 = inter1.float() / union1.float() if union1 > 0 else 0.0
+
+                    div_keep.append(mask_idx1 if iou1 > iou0 else mask_idx0)
+
+        keep_indices = list(range(num_non_div)) + div_keep
         keep_indices = torch.tensor(
             keep_indices, device=high_res_masks.device, dtype=torch.long
         )
@@ -1023,7 +1093,17 @@ class SAM2AutomaticCellTracker:
             else:
                 filtered_scores[key] = value.index_select(0, keep_indices)
 
-        return high_res_masks, low_res_masks, ious, obj_ptr, filtered_scores
+        if obj_ids_for_masks is not None and obj_ids_for_masks.shape[0] == expected_len:
+            obj_ids_for_masks = obj_ids_for_masks.index_select(0, keep_indices)
+
+        return (
+            high_res_masks,
+            low_res_masks,
+            ious,
+            obj_ptr,
+            filtered_scores,
+            obj_ids_for_masks,
+        )
 
     def _compute_single_centroid(
         self, mask: np.ndarray
@@ -1177,6 +1257,8 @@ class SAM2AutomaticCellTracker:
 
         centroids_cache: Dict[int, Dict[int, Tuple[float, float]]] = {}
         candidate_pairs = []
+        fallback_candidates: Dict[int, Tuple[float, int, int, int]] = {}
+        fallback_candidates_no_dist: Dict[int, Tuple[float, int, int, int]] = {}
 
         for bud_id, frame_idx in bud_events:
             if frame_idx <= 0:
@@ -1193,6 +1275,9 @@ class SAM2AutomaticCellTracker:
                 centroids_cache[frame_idx - 1] = self._compute_centroids(prev_mask)
             prev_centroids = centroids_cache[frame_idx - 1]
 
+            best_candidate = None
+            best_candidate_no_dist = None
+
             for mother_id, mother_centroid in prev_centroids.items():
                 if mother_id == bud_id:
                     continue
@@ -1202,22 +1287,31 @@ class SAM2AutomaticCellTracker:
                         bud_centroid[1] - mother_centroid[1],
                     )
                 )
-                if (
-                    self.bud_max_distance is not None
-                    and centroid_dist > self.bud_max_distance
-                ):
-                    continue
                 mother_mask = prev_mask == mother_id
                 if not mother_mask.any():
                     continue
                 score = self._score_bud_mother_pair(
                     bud_mask, mother_mask, centroid_dist
                 )
+                if best_candidate_no_dist is None or score > best_candidate_no_dist[0]:
+                    best_candidate_no_dist = (score, bud_id, mother_id, frame_idx)
+                if (
+                    self.bud_max_distance is not None
+                    and centroid_dist > self.bud_max_distance
+                ):
+                    continue
+                if best_candidate is None or score > best_candidate[0]:
+                    best_candidate = (score, bud_id, mother_id, frame_idx)
                 if score < self.bud_min_score:
                     continue
                 candidate_pairs.append((score, bud_id, mother_id, frame_idx))
 
-        if not candidate_pairs:
+            if best_candidate is not None:
+                fallback_candidates[int(bud_id)] = best_candidate
+            elif best_candidate_no_dist is not None:
+                fallback_candidates_no_dist[int(bud_id)] = best_candidate_no_dist
+
+        if not candidate_pairs and not fallback_candidates and not fallback_candidates_no_dist:
             self._rebuild_res_track(inference_state, tracking_results)
             return
 
@@ -1234,6 +1328,19 @@ class SAM2AutomaticCellTracker:
                 frame_idx - last_frame <= self.bud_cooldown_frames
             ):
                 continue
+            bud_to_mother[int(bud_id)] = int(mother_id)
+            assigned_buds.add(bud_id)
+            mother_last_frame[mother_id] = frame_idx
+
+        for bud_id, frame_idx in bud_events:
+            if bud_id in assigned_buds:
+                continue
+            fallback = fallback_candidates.get(int(bud_id))
+            if fallback is None:
+                fallback = fallback_candidates_no_dist.get(int(bud_id))
+            if fallback is None:
+                continue
+            _score, _bud_id, mother_id, _frame_idx = fallback
             bud_to_mother[int(bud_id)] = int(mother_id)
             assigned_buds.add(bud_id)
             mother_last_frame[mother_id] = frame_idx

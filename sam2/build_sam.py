@@ -88,7 +88,11 @@ def build_sam2(
         logging.info("Initializing LoRA adapters...")
         SAM2withLoRA = instantiate(cfg.trainer.lora, model=model, _convert_="all")
         model = SAM2withLoRA.model
-    _load_checkpoint(model, ckpt_path, strict=not cfg.scratch.use_lora)
+    strict = not cfg.scratch.use_lora
+    # Allow overriding strictness when loading a base checkpoint into a model with extra heads.
+    if hasattr(cfg, "scratch") and "strict_load" in cfg.scratch:
+        strict = bool(cfg.scratch.strict_load)
+    _load_checkpoint(model, ckpt_path, strict=strict)
     model = model.to(device)
     if mode == "eval":
         model.eval()
