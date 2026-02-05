@@ -59,7 +59,8 @@ def best_iou_label(gt_mask, pred_mask, pred_label, iou_thresh):
     return best_label
 
 
-def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir, gt_mask_prefix, window, iou_thresh,):
+def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir,
+                            gt_mask_prefix, delay, iou_thresh,):
     gt_by_mother = {}
     for mother_id, frame_gt in gt_events:
         gt_by_mother.setdefault(mother_id, []).append(frame_gt)
@@ -87,7 +88,7 @@ def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir, 
         for frame_gt in candidates:
             if (gt_mother, frame_gt) in matched_gt:
                 continue
-            if abs(frame_gt - pred_frame) <= window:
+            if abs(frame_gt - pred_frame) <= delay:
                 dist = abs(frame_gt - pred_frame)
                 if best is None or dist < best_dist:
                     best = frame_gt
@@ -110,39 +111,86 @@ def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir, 
         "recall": recall,
         "f1": f1,
     }
+def eval_division_by_video(
+    gt_video_dir: Path,
+    pred_video_dir: Path,
+    delay: int,
+    iou_thresh: float,
+    gt_mask_prefix: str = "man_track",
+):
+    """
+    Evaluate division events for a single video.
 
+    Parameters
+    ----------
+    gt_video_dir : Path
+        Path to GT video directory (e.g. .../12_GT/TRA)
+    pred_video_dir : Path
+        Path to prediction directory (e.g. .../12)
+    delay : int
+        Temporal tolerance (in frames)
+    iou_thresh : float
+        IoU threshold for mother ID matching
+    gt_mask_prefix : str
+        Prefix for GT masks (default: 'man_track')
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
-    parser.add_argument("--gt-root", required=True)
-    parser.add_argument("--pred-root", required=True)
-    parser.add_argument("--videos", default="12,13,14")
-    parser.add_argument("--window", type=int, default=3)
-    parser.add_argument("--iou-thresh", type=float, default=0.5)
-    parser.add_argument("--gt-mask-prefix", default="man_track")
-    parser.add_argument("--save-json", default="")
-    args = parser.parse_args()
+    Returns
+    -------
+    dict
+        Metrics dictionary with tp / fp / fn / precision / recall / f1
+    """
 
-    gt_root = Path(args.gt_root)
-    pred_root = Path(args.pred_root)
-    video_ids = [v.strip() for v in args.videos.split(",") if v.strip()]
+    gt_events = load_events_from_track(gt_video_dir / "man_track.txt")
+    pred_events = load_events_from_track(pred_video_dir / "res_track.txt")
 
-    results = {}
+    metrics_by_video = match_predictions_to_gt(
+        gt_events=gt_events,
+        pred_events=pred_events,
+        gt_mask_dir=gt_video_dir,
+        pred_mask_dir=pred_video_dir,
+        gt_mask_prefix=gt_mask_prefix,
+        delay=delay,
+        iou_thresh=iou_thresh,
+    )
+
+    return metrics_by_video
+
+def eval_division_all_video(
+    gt_root,
+    pred_root,
+    video_ids,
+    delay,
+    iou_thresh,
+    gt_mask_prefix="man_track",
+):
+    """
+    Evaluate division events over multiple videos.
+
+    Returns
+    -------
+    dict
+        Per-video metrics + overall aggregated metrics
+    """
+
+    gt_root = Path(gt_root)
+    pred_root = Path(pred_root)
+
+    results_all_videos = {}
     total = {"tp": 0, "fp": 0, "fn": 0}
 
     for vid in video_ids:
-        gt_dir = gt_root / f"{vid}_GT" / "TRA"
-        pred_dir = pred_root / vid
-        gt_events = load_events_from_track(gt_dir / "man_track.txt")
-        pred_events = load_events_from_track(pred_dir / "res_track.txt")
-        metrics = match_predictions_to_gt(gt_events,
-                                          pred_events,
-                                          gt_dir,
-                                          pred_dir,
-                                          args.gt_mask_prefix,
-                                          args.window,
-                                          args.iou_thresh,)
-        results[vid] = metrics
+        gt_video_dir = gt_root / f"{vid}_GT" / "TRA"
+        pred_video_dir = pred_root / vid
+
+        metrics = eval_division_by_video(
+            gt_video_dir=gt_video_dir,
+            pred_video_dir=pred_video_dir,
+            delay=delay,
+            iou_thresh=iou_thresh,
+            gt_mask_prefix=gt_mask_prefix,
+        )
+
+        results_all_videos[vid] = metrics
         total["tp"] += metrics["tp"]
         total["fp"] += metrics["fp"]
         total["fn"] += metrics["fn"]
@@ -150,7 +198,8 @@ def main():
     precision = total["tp"] / (total["tp"] + total["fp"] + 1e-12)
     recall = total["tp"] / (total["tp"] + total["fn"] + 1e-12)
     f1 = 2 * precision * recall / (precision + recall + 1e-12)
-    results["overall"] = {
+
+    results_all_videos["overall"] = {
         "tp": total["tp"],
         "fp": total["fp"],
         "fn": total["fn"],
@@ -159,12 +208,28 @@ def main():
         "f1": f1,
     }
 
+    return results_all_videos
+
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
+    parser.add_argument("--gt_root", required=True)
+    parser.add_argument("--pred_root", required=True)
+    parser.add_argument("--videos", default="12,13,14")
+    parser.add_argument("--delay", type=int, default=3)
+    parser.add_argument("--iou_thresh", type=float, default=0.5)
+    parser.add_argument("--save_json",  default= "")
+    args = parser.parse_args()
+    video_ids = [v.strip() for v in args.videos.split(",") if v.strip()]
+    results = eval_division_all_video(args.gt_root, args.pred_root, video_ids, args.delay,
+                                     args.iou_thresh, gt_mask_prefix="man_track")
+    print(f"For videos {video_ids=}")
     print(json.dumps(results, indent=2))
+
     if args.save_json:
         out_path = Path(args.save_json)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(results, indent=2))
 
-
-if __name__ == "__main__":
-    main()
+# python tools/eval_division_iou_window.py --gt_root /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC --pred_root /home/hcourtei/Projects/Cell_proj/CellSam2Gilles/results/model:moma_N3_checked_v100/data_vers:moma8

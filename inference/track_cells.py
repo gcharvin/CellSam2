@@ -1,5 +1,8 @@
 # Standard library imports
+
+# TODO GATHER VIDEO json
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -11,6 +14,7 @@ from inference_utils import get_device, get_result_path, get_tif_directories, ge
 
 # Local imports
 from sam2.build_sam import build_sam2
+from tools.eval_division_iou_window import eval_division_by_video
 
 
 def parse_args():
@@ -99,6 +103,17 @@ def process_directory(
     )
     combined_pred_gt_videos(result_summary)
 
+    metrics_by_video = eval_division_by_video(
+            dir_path,
+            result_path,
+            delay=3,
+            iou_thresh=0.2,
+            gt_mask_prefix = "man_track",
+    )
+    print("DIVISION EVALUATION")
+    print(json.dumps(metrics_by_video, indent=2))
+    eval_division_video_path = result_summary / 'eval_div_video.json'
+    eval_division_video_path.write_text(json.dumps(metrics_by_video, indent=2))
     print(f"Finished processing: {dir_path}")
 
 
