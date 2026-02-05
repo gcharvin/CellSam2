@@ -1,3 +1,5 @@
+import shutil
+
 import cv2
 import logging
 import numpy as np
@@ -10,6 +12,7 @@ from sam2.utils.amg import MaskData,batched_mask_to_box
 from sam2.utils.misc import load_video_frames, read_image
 from sam2.utils.transforms import SAM2Transforms
 
+from inference_utils import create_colored_frame, draw_division_lines, add_frame_number, save_video
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +151,8 @@ class SAM2AutomaticCellTracker:
 
         return inference_state
 
-    def predict(self,video_path,res_path, offload_video_to_cpu=True,offload_state_to_cpu=False,max_frame_num_to_track=None,):
+    def predict(self,video_path, res_path, offload_video_to_cpu=True,offload_state_to_cpu=False,
+                max_frame_num_to_track=None, fps=4):
         """Predict and track cells throughout a video.
 
         Args:
@@ -176,7 +180,7 @@ class SAM2AutomaticCellTracker:
         # Detect and track the detected cells through the video
         tracking_results = self.track_cells(inference_state)
 
-        self.save_tracking_results(inference_state, tracking_results)
+        self.save_tracking_results(inference_state, tracking_results, fps=fps)
 
         return tracking_results
 
@@ -405,7 +409,7 @@ class SAM2AutomaticCellTracker:
                                             if lost_cell_id in processed_lost_cells:
                                                 continue
 
-                                            if (frame_idx - 1 in inference_state["memory_dict"][lost_cell_id]["frame_idx"]):
+                                            if frame_idx - 1 in inference_state["memory_dict"][lost_cell_id]["frame_idx"]:
                                                 detected_mask[detected_mask == detected_cell_id] = lost_cell_id
                                                 inference_state["memory_dict"][lost_cell_id]["mask_mem_features"] = torch.cat(
                                                     (inference_state["memory_dict"][lost_cell_id]["mask_mem_features"],
@@ -843,20 +847,24 @@ class SAM2AutomaticCellTracker:
                         logger.warning("Non-contiguous track for id %s at frame %s (prev_end=%s).",cell_id,frame_idx,int(prev_end[0]),)
                     res_track[res_track[:, 0] == cell_id, 2] = frame_idx
 
-            np.savetxt(res_path / "res_track.txt", res_track, fmt="%d")
+            np.savetxt(res_path / "summary" / "res_track.txt", res_track, fmt="%d")
 
             inference_state["res_track"] = res_track
 
-    def save_tracking_results(self, inference_state, tracking_results, alpha=0.3):
+    def save_tracking_results(self, inference_state, tracking_results, alpha=0.3, fps=4.0):
         res_path = inference_state["res_path"]
 
+        # Determine mode and number of colors
         if self.segment:
             num_colors = 1000
+            mode = "segment"
         else:
-            num_colors = (inference_state["max_obj_id"] + 1)  # Add 1 to account for 0-based indexing
+            num_colors = max(1000, inference_state["max_obj_id"] + 1)  # Add 1 to account for 0-based indexing
+            mode = "track"
         colors = np.random.randint(0, 255, (num_colors, 3))
-        color_stack = np.zeros((len(tracking_results), inference_state["video_height"], inference_state["video_width"], 3,),dtype=np.uint8,)
-        # Keep a persistent mother->bud link overlay for asymmetric lineage visualization.
+
+        # Prepare prediction frames
+        pred_frames = []
         parent_map = {}
         if not self.segment:
             res_track = inference_state.get("res_track")
@@ -868,79 +876,60 @@ class SAM2AutomaticCellTracker:
         for frame_idx, track_mask in enumerate(tracking_results):
             img = read_image(str(inference_state["video_path"] / f"t{frame_idx:03d}.tif"), return_np=True)
 
-            # Create a colored overlay image
-            overlay = np.zeros_like(img)
+            # Create colored frame for prediction
+            pred_frame, centroids = create_colored_frame(img, track_mask, colors, alpha)
 
-            cell_ids = np.unique(track_mask)
-            cell_ids = cell_ids[cell_ids != 0]  # Exclude background (0)
-
-            # Add colored masks for each cell
-            for cell_id in cell_ids:
-                mask = track_mask == cell_id
-                overlay[mask] = colors[cell_id]
-
-            # Blend original image with colored overlay
-            color_stack[frame_idx] = cv2.addWeighted(img, 1 - alpha, overlay, alpha, 0)
-
-            centroids = {}
-            for cell_id in cell_ids:
-                mask = track_mask == cell_id
-                y_coords, x_coords = np.where(mask)
-                if len(y_coords) == 0:
-                    continue
-
-                centroid_y = int(np.mean(y_coords))
-                centroid_x = int(np.mean(x_coords))
-                centroids[int(cell_id)] = (centroid_x, centroid_y)
-
-                cv2.putText(
-                    color_stack[frame_idx],
-                    str(cell_id),
-                    (centroid_x - 5, centroid_y + 3),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,  # Font scale
-                    (0, 0, 0),  # black color
-                    1,  # Line thickness
-                    cv2.LINE_AA,
-                )
-
+            # Draw division lines for prediction
             if not self.segment and parent_map:
-                for child_id, parent_id in parent_map.items():
-                    child_centroid = centroids.get(child_id)
-                    parent_centroid = centroids.get(parent_id)
-                    if child_centroid is None or parent_centroid is None:
-                        continue
-                    cv2.line(
-                        color_stack[frame_idx],
-                        child_centroid,
-                        parent_centroid,
-                        (0, 0, 0),  # Black color
-                        1,
-                    )  # Line thickness
+                draw_division_lines(pred_frame, centroids, parent_map)
 
-            # Add frame number to top of frame
-            cv2.putText(
-                color_stack[frame_idx],
-                f"{frame_idx:03}",
-                (0, 15),  # Position in top-left
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,  # Font scale
-                (255, 255, 255),  # White color
-                1,  # Line thickness
-                cv2.LINE_AA,
-            )
+            # Add frame number
+            add_frame_number(pred_frame, frame_idx)
 
-        # Save as video
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        mode = "segment" if self.segment else "track"
-        out = cv2.VideoWriter(
-            str(res_path / f"pred_{mode}_video.mp4"),
-            fourcc,
-            10.0,  # 10 fps
-            (inference_state["video_width"], inference_state["video_height"]),
-        )
+            pred_frames.append(pred_frame)
 
-        for frame in color_stack:
-            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        # Save prediction video
+        pred_video_path = str(res_path / "summary" /f"pred_{mode}_video.mp4")
+        save_video(pred_frames, pred_video_path, fps=fps)
 
-        out.release()
+        # Prepare ground truth frames
+        gt_frames = []
+        gt_parent_map = {}
+
+        # Load ground truth tracking data
+        gt_track_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / "man_track.txt"
+
+        if gt_track_path.exists():
+            gt_track_data = np.loadtxt(gt_track_path, dtype=np.int32)
+            if gt_track_data.ndim == 1:
+                gt_track_data = gt_track_data.reshape(1, -1)
+            for row in gt_track_data:
+                cell_id, _, _, parent_id = row
+                if parent_id > 0:
+                    gt_parent_map[int(cell_id)] = int(parent_id)
+
+        for frame_idx in range(len(tracking_results)):
+            img = read_image(str(inference_state["video_path"] / f"t{frame_idx:03d}.tif"), return_np=True)
+            gt_mask_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / f"man_track{frame_idx:03d}.tif"
+            gt_mask = cv2.imread(str(gt_mask_path), cv2.IMREAD_UNCHANGED) if gt_mask_path.exists() else None
+
+            if gt_mask is not None:
+                # Create colored frame for ground truth
+                gt_frame, gt_centroids = create_colored_frame(img, gt_mask, colors, alpha)
+
+                # Draw division lines for ground truth
+                if gt_parent_map:
+                    draw_division_lines(gt_frame, gt_centroids, gt_parent_map)
+
+                # Add frame number
+                add_frame_number(gt_frame, frame_idx)
+
+                gt_frames.append(gt_frame)
+            else:
+                gt_frames.append(img)
+
+        # Save ground truth video
+        gt_video_path = str(res_path /  "summary" / f"gt_{mode}_video.mp4")
+        save_video(gt_frames, gt_video_path, fps=fps)
+        man_track_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / f"man_track.txt"
+        shutil.copy(man_track_path, res_path /  "summary" / "man_track.txt")

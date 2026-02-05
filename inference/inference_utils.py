@@ -1,11 +1,12 @@
+import subprocess
+import torch
+import cv2
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
-
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+
 
 
 def get_device():
@@ -177,3 +178,119 @@ def show_anns(anns, borders=True, mask_alpha=0.1):
                 )
 
     ax.imshow(img)
+
+
+
+def create_colored_frame(img, mask, colors, alpha=0.3,id_scale=0.3):
+    """Create a colored frame with overlay from an image and a mask."""
+    overlay = np.zeros_like(img)
+    cell_ids = np.unique(mask)
+    cell_ids = cell_ids[cell_ids != 0]  # Exclude background (0)
+
+    centroids = {}
+    for cell_id in cell_ids:
+        # Vérifiez que cell_id est dans les limites du tableau colors
+        if cell_id >= len(colors):
+            # Si cell_id dépasse la taille de colors, redimensionnez colors
+            new_colors = np.random.randint(0, 255, (cell_id + 1, 3))
+            new_colors[:len(colors)] = colors
+            colors = new_colors
+
+        mask_binary = mask == cell_id
+        overlay[mask_binary] = colors[cell_id]
+
+        y_coords, x_coords = np.where(mask_binary)
+        if len(y_coords) == 0:
+            continue
+
+        centroid_y = int(np.mean(y_coords))
+        centroid_x = int(np.mean(x_coords))
+        centroids[int(cell_id)] = (centroid_x, centroid_y)
+
+    # Appliquer l'overlay à l'image
+    colored_frame = cv2.addWeighted(img, 1 - alpha, overlay, alpha, 0)
+
+    # Dessiner les IDs directement sur l'image finale
+    for cell_id in centroids:
+        centroid_x, centroid_y = centroids[cell_id]
+        cv2.putText(
+            colored_frame,
+            str(cell_id),
+            (centroid_x - 5, centroid_y + 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            id_scale,  # Font scale
+            (0, 0, 255),  # Rouge en BGR
+            1,  # Line thickness
+            cv2.LINE_AA,
+        )
+
+    return colored_frame, centroids
+
+
+def draw_division_lines(frame, centroids, parent_map):
+    """Draw division lines between parent and child cells."""
+    for child_id, parent_id in parent_map.items():
+        child_centroid = centroids.get(child_id)
+        parent_centroid = centroids.get(parent_id)
+        if child_centroid is None or parent_centroid is None:
+            continue
+        cv2.line(
+            frame,
+            child_centroid,
+            parent_centroid,
+            (0, 0, 0),  # Black color
+            1,
+        )
+
+def add_frame_number(frame, frame_idx):
+    """Add frame number to the top of the frame."""
+    cv2.putText(
+        frame,
+        f"{frame_idx:03}",
+        (0, 15),  # Position in top-left
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,  # Font scale
+        (255, 255, 255),  # White color
+        1,  # Line thickness
+        cv2.LINE_AA,
+    )
+
+def save_video(frames, output_path, fps=10.0):
+    """Save frames as a video."""
+    height, width = frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    for frame in frames:
+        out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+    out.release()
+
+
+def combined_pred_gt_videos(summary_pred_path : Path):
+
+    pred_mp4_path = summary_pred_path / "pred_track_video.mp4"
+    gt_mp4_path = summary_pred_path / "gt_track_video.mp4"
+    output_mp4 = summary_pred_path / "combined_pred_gt_video.mp4"
+    # Vérification globale
+    if not pred_mp4_path.exists() or not gt_mp4_path.exists():
+        print("Erreur : Un ou plusieurs fichiers nécessaires sont manquants.")
+
+    # Commande ffmpeg pour concaténer les vidéos horizontalement
+    cmd = [
+        'ffmpeg',
+        '-y',  # Overwrite output file without asking
+        '-i', str(pred_mp4_path),
+        '-i', str(gt_mp4_path),
+        '-filter_complex', '[0:v][1:v]hstack=inputs=2[v]',  # Concaténer horizontalement
+        '-map', '[v]',
+        '-c:v', 'libx264',
+        '-crf', '18',
+        '-preset', 'fast',
+        '-loglevel', 'quiet',
+        str(output_mp4)
+    ]
+
+
+    # Exécuter la commande
+    subprocess.run(cmd, check=True)

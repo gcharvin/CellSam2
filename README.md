@@ -7,6 +7,10 @@ CTC format
 https://public.celltrackingchallenge.net/documents/Naming%20and%20file%20content%20conventions.pdf
 
 
+python3 tools/eval_division_iou_window.py     --gt-root /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC/     --pred-root /home/hcourtei/Projects/Cell_proj/CellSam2/results/tracking/     --videos "12,13,14"     --window 3     --iou-thresh 0.5     --gt-mask-prefix "man_track"     --save-json /home/hcourtei/Projects/Cell_proj/CellSam2/results/evaluation_results.json
+python3 inference/track_cells.py    --video_path /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC/12 
+                                    --model_name moma_N3_checked_v100  
+                                    --res_path results/moma_N3_checked_v100
 # merge videos
 
 
