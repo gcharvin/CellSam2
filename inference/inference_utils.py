@@ -1,6 +1,11 @@
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except ModuleNotFoundError:
+    tk = None
+    filedialog = None
 
 import cv2
 import matplotlib.pyplot as plt
@@ -25,6 +30,11 @@ def get_video_path() -> Path:
         Path: Selected path to video file or image directory
 
     """
+    if tk is None or filedialog is None:
+        raise RuntimeError(
+            "tkinter is not available. Please pass --video_path on the command line."
+        )
+
     # Create and hide the root window
     root = tk.Tk()
     root.withdraw()

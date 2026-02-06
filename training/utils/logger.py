@@ -16,7 +16,27 @@ from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
 from numpy import ndarray
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:
+    SummaryWriter = None
+
+
+class _NoOpSummaryWriter:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def add_scalar(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def add_hparams(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 from training.utils.train_utils import get_machine_local_and_dist_rank, makedir
 
@@ -25,7 +45,7 @@ Scalar = Union[Tensor, ndarray, int, float]
 
 def make_tensorboard_logger(log_dir: str, **writer_kwargs: Any):
     makedir(log_dir)
-    summary_writer_method = SummaryWriter
+    summary_writer_method = SummaryWriter or _NoOpSummaryWriter
     return TensorBoardLogger(
         path=log_dir, summary_writer_method=summary_writer_method, **writer_kwargs
     )
