@@ -10,7 +10,8 @@ from pathlib import Path
 import hydra
 from cell_tracker import SAM2AutomaticCellTracker
 from hydra.core.global_hydra import GlobalHydra
-from inference_utils import get_device, get_result_path, get_tif_directories, get_video_path, combined_pred_gt_videos
+from inference_utils import (get_device, get_result_path, get_tif_directories, get_video_path,
+                             combined_pred_gt_videos,  aggregate_video_metrics)
 
 # Local imports
 from sam2.build_sam import build_sam2
@@ -102,19 +103,24 @@ def process_directory(
         fps=fps,
     )
     combined_pred_gt_videos(result_summary)
+    print("-> Predictions are in :", result_path)
+    # example : dir_path = moma_N_3_checked/moma/val/CTC/12
+    # result_path = eval_model/model:moma_N3_checked_v100/data_vers:moma_N3_checked/12
 
+    gt_video_track_dir = dir_path.with_name(f"{dir_path.name}_GT") / "TRA" # moma_N_3_checked/moma/val/CTC/12_GT/TRA
     metrics_by_video = eval_division_by_video(
-            dir_path,
+            gt_video_track_dir ,
             result_path,
             delay=3,
-            iou_thresh=0.2,
+            iou_thresh=0.5,
             gt_mask_prefix = "man_track",
     )
-    print("DIVISION EVALUATION")
+    print("-> Division evaluation with gt" )
     print(json.dumps(metrics_by_video, indent=2))
     eval_division_video_path = result_summary / 'eval_div_video.json'
     eval_division_video_path.write_text(json.dumps(metrics_by_video, indent=2))
-    print(f"Finished processing: {dir_path}")
+    print(f"Finished processing")
+    return metrics_by_video
 
 
 def main():
@@ -146,7 +152,7 @@ def main():
 
     # Get input path
     video_path = Path(args.video_path) if args.video_path else get_video_path()
-
+    all_metrics_by_video = []
     try:
         # Get directories containing .tif files
         directories = get_tif_directories(video_path)
@@ -156,18 +162,22 @@ def main():
         for idx, dir_path in enumerate(directories):
             res_pred_path = Path(args.res_path) / f"model:{model_name}" / f"data_vers:{args.data_version}"
 
-            process_directory(
-                tracker=tracker,
-                dir_path=dir_path,
-                base_dir=base_dir,
-                model_name=model_name,
-                input_path=video_path,
-                res_path=res_pred_path,
-                total_dirs=len(directories),
-                idx=idx,
-                fps=args.fps
-            )
-
+            metrics_by_video= process_directory(
+                                                tracker=tracker,
+                                                dir_path=dir_path,
+                                                base_dir=base_dir,
+                                                model_name=model_name,
+                                                input_path=video_path,
+                                                res_path=res_pred_path,
+                                                total_dirs=len(directories),
+                                                idx=idx,
+                                                fps=args.fps
+                                            )
+            all_metrics_by_video.append(metrics_by_video)
+        if len(all_metrics_by_video)>1:
+            total_metrics = aggregate_video_metrics(all_metrics_by_video)
+            print("Overall metrics")
+            print(json.dumps(total_metrics, indent=2))
 
     except ValueError as e:
         print(f"Error: {e}")

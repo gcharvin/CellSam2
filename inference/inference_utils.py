@@ -255,7 +255,7 @@ def add_frame_number(frame, frame_idx):
         cv2.LINE_AA,
     )
 
-def save_video(frames, output_path, fps=10.0):
+def save_video(frames, output_path, fps=4.0):
     """Save frames as a video."""
     height, width = frames[0].shape[:2]
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -294,3 +294,40 @@ def combined_pred_gt_videos(summary_pred_path : Path):
 
     # Exécuter la commande
     subprocess.run(cmd, check=True)
+
+
+
+def aggregate_video_metrics(all_metrics_by_video):
+    """
+    Agrège les métriques de plusieurs vidéos en un seul dictionnaire de métriques globales.
+
+    Args:
+        all_metrics_by_video: Liste de dictionnaires de métriques par vidéo.
+
+    Returns:
+        total_metrics: Dictionnaire des métriques globales.
+    """
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+
+    for metrics in all_metrics_by_video:
+        total_tp += metrics["tp"]
+        total_fp += metrics["fp"]
+        total_fn += metrics["fn"]
+
+    # Calcul des métriques globales
+    precision = total_tp / (total_tp + total_fp + 1e-12)
+    recall = total_tp / (total_tp + total_fn + 1e-12)
+    f1 = 2 * precision * recall / (precision + recall + 1e-12)
+
+    total_metrics = {
+        "tp": total_tp,
+        "fp": total_fp,
+        "fn": total_fn,
+        "precision": round(precision,3),
+        "recall": round(recall,3),
+        "f1": round(f1,3)
+    }
+
+    return total_metrics

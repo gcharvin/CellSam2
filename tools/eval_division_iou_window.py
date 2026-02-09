@@ -107,9 +107,9 @@ def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir,
         "tp": tp,
         "fp": fp,
         "fn": fn,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
+        "precision": round(precision,3),
+        "recall": round(recall,3),
+        "f1": round(f1,3),
     }
 def eval_division_by_video(
     gt_video_dir: Path,
@@ -141,7 +141,7 @@ def eval_division_by_video(
     """
 
     gt_events = load_events_from_track(gt_video_dir / "man_track.txt")
-    pred_events = load_events_from_track(pred_video_dir / "res_track.txt")
+    pred_events = load_events_from_track(pred_video_dir / "summary" / "res_track.txt")
 
     metrics_by_video = match_predictions_to_gt(
         gt_events=gt_events,
@@ -212,24 +212,38 @@ def eval_division_all_video(
 
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
-    parser.add_argument("--gt_root", required=True)
-    parser.add_argument("--pred_root", required=True)
-    parser.add_argument("--videos", default="12,13,14")
-    parser.add_argument("--delay", type=int, default=3)
-    parser.add_argument("--iou_thresh", type=float, default=0.5)
-    parser.add_argument("--save_json",  default= "")
-    args = parser.parse_args()
-    video_ids = [v.strip() for v in args.videos.split(",") if v.strip()]
-    results = eval_division_all_video(args.gt_root, args.pred_root, video_ids, args.delay,
-                                     args.iou_thresh, gt_mask_prefix="man_track")
-    print(f"For videos {video_ids=}")
-    print(json.dumps(results, indent=2))
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
+#     parser.add_argument("--gt_root", required=True)
+#     parser.add_argument("--pred_root", required=True)
+#     parser.add_argument("--videos", default="12,13,14")
+#     parser.add_argument("--delay", type=int, default=3)
+#     parser.add_argument("--iou_thresh", type=float, default=0.5)
+#     parser.add_argument("--save_json",  default= "")
+#     args = parser.parse_args()
+#     video_ids = [v.strip() for v in args.videos.split(",") if v.strip()]
+#     results = eval_division_all_video(args.gt_root, args.pred_root, video_ids, args.delay,
+#                                      args.iou_thresh, gt_mask_prefix="man_track")
+#     print(f"For videos {video_ids=}")
+#     print(json.dumps(results, indent=2))
+#
+#     if args.save_json:
+#         out_path = Path(args.save_json)
+#         out_path.parent.mkdir(parents=True, exist_ok=True)
+#         out_path.write_text(json.dumps(results, indent=2))
 
-    if args.save_json:
-        out_path = Path(args.save_json)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(results, indent=2))
 
 # python tools/eval_division_iou_window.py --gt_root /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC --pred_root /home/hcourtei/Projects/Cell_proj/CellSam2Gilles/results/model:moma_N3_checked_v100/data_vers:moma8
+
+
+# gt_video_dir = Path("/home/hcourtei/Projects/Cell_proj/data/moma_N_0_checked/moma/val/CTC/12_GT/TRA")
+# pred_video_dir = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/eval_model/model:moma_N0_checked_v100/data_vers:moma_N0_checked/12")
+# metrics_by_video = eval_division_by_video(
+#     gt_video_dir,
+#     pred_video_dir,
+#     delay=3,
+#     iou_thresh=0.5,
+#     gt_mask_prefix="man_track",
+# )
+#
+# print(json.dumps(metrics_by_video, indent=2))

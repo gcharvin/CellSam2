@@ -19,8 +19,11 @@ python3 tools/eval_division_iou_window.py   --gt-root /home/hcourtei/Projects/Ce
 python3 inference/track_cells.py    --video_path /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC/12 
                                     --model_name moma_N3_checked_v100  
                                     --res_path results/moma_N3_checked_v100
+
+
 # merge videos
 
+ export PYTHONPATH="/home/hcourtei/Projects/Cell_proj/CellSam2Gilles:$PYTHONPATH"
 
 ```
 ffmpeg \
