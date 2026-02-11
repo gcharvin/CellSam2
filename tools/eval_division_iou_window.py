@@ -60,7 +60,7 @@ def best_iou_label(gt_mask, pred_mask, pred_label, iou_thresh):
 
 
 def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir,
-                            gt_mask_prefix, delay, iou_thresh,):
+                            gt_mask_prefix, temporal_tolerance, iou_thresh, ):
     gt_by_mother = {}
     for mother_id, frame_gt in gt_events:
         gt_by_mother.setdefault(mother_id, []).append(frame_gt)
@@ -88,7 +88,7 @@ def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir,
         for frame_gt in candidates:
             if (gt_mother, frame_gt) in matched_gt:
                 continue
-            if abs(frame_gt - pred_frame) <= delay:
+            if abs(frame_gt - pred_frame) <= temporal_tolerance:
                 dist = abs(frame_gt - pred_frame)
                 if best is None or dist < best_dist:
                     best = frame_gt
@@ -111,13 +111,7 @@ def match_predictions_to_gt(gt_events, pred_events, gt_mask_dir, pred_mask_dir,
         "recall": round(recall,3),
         "f1": round(f1,3),
     }
-def eval_division_by_video(
-    gt_video_dir: Path,
-    pred_video_dir: Path,
-    delay: int,
-    iou_thresh: float,
-    gt_mask_prefix: str = "man_track",
-):
+def eval_division_by_video(gt_video_dir: Path, pred_video_dir: Path, temporal_tolerance: int, iou_thresh: float, gt_mask_prefix: str = "man_track"):
     """
     Evaluate division events for a single video.
 
@@ -127,7 +121,7 @@ def eval_division_by_video(
         Path to GT video directory (e.g. .../12_GT/TRA)
     pred_video_dir : Path
         Path to prediction directory (e.g. .../12)
-    delay : int
+    temporal_tolerance : int
         Temporal tolerance (in frames)
     iou_thresh : float
         IoU threshold for mother ID matching
@@ -149,20 +143,13 @@ def eval_division_by_video(
         gt_mask_dir=gt_video_dir,
         pred_mask_dir=pred_video_dir,
         gt_mask_prefix=gt_mask_prefix,
-        delay=delay,
+        temporal_tolerance=temporal_tolerance,
         iou_thresh=iou_thresh,
     )
 
     return metrics_by_video
 
-def eval_division_all_video(
-    gt_root,
-    pred_root,
-    video_ids,
-    delay,
-    iou_thresh,
-    gt_mask_prefix="man_track",
-):
+def eval_division_all_video(gt_root, pred_root, video_ids, temporal_tolerance, iou_thresh, gt_mask_prefix="man_track"):
     """
     Evaluate division events over multiple videos.
 
@@ -185,7 +172,7 @@ def eval_division_all_video(
         metrics = eval_division_by_video(
             gt_video_dir=gt_video_dir,
             pred_video_dir=pred_video_dir,
-            delay=delay,
+            temporal_tolerance=temporal_tolerance,
             iou_thresh=iou_thresh,
             gt_mask_prefix=gt_mask_prefix,
         )
@@ -212,7 +199,7 @@ def eval_division_all_video(
 
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(description="Evaluate division events with IoU-based ID matching and time window.")
 #     parser.add_argument("--gt_root", required=True)
 #     parser.add_argument("--pred_root", required=True)
@@ -235,15 +222,18 @@ def eval_division_all_video(
 
 # python tools/eval_division_iou_window.py --gt_root /home/hcourtei/Projects/Cell_proj/data/moma_N_1_checked/moma/val/CTC --pred_root /home/hcourtei/Projects/Cell_proj/CellSam2Gilles/results/model:moma_N3_checked_v100/data_vers:moma8
 
+    gt_video_dir = Path("/home/hcourtei/Projects/Cell_proj/data/moma_N_0_checked/moma/val/CTC/12_GT/TRA")
+    pred_video_dir = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/eval_model/model:moma_N0_checked_v100/data_vers:moma_N0_checked/12")
+    temporal_tolerance=3
+    iou_thresh=0.5
+    print(f"{temporal_tolerance=} {iou_thresh=}")
+    metrics_by_video = eval_division_by_video(
+        gt_video_dir,
+        pred_video_dir,
+        temporal_tolerance=3,
+        iou_thresh=0.5,
+        gt_mask_prefix="man_track",
+    )
+    #
+    print(json.dumps(metrics_by_video, indent=2))
 
-# gt_video_dir = Path("/home/hcourtei/Projects/Cell_proj/data/moma_N_0_checked/moma/val/CTC/12_GT/TRA")
-# pred_video_dir = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/eval_model/model:moma_N0_checked_v100/data_vers:moma_N0_checked/12")
-# metrics_by_video = eval_division_by_video(
-#     gt_video_dir,
-#     pred_video_dir,
-#     delay=3,
-#     iou_thresh=0.5,
-#     gt_mask_prefix="man_track",
-# )
-#
-# print(json.dumps(metrics_by_video, indent=2))

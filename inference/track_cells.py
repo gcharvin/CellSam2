@@ -15,7 +15,7 @@ from inference_utils import (get_device, get_result_path, get_tif_directories, g
 
 # Local imports
 from sam2.build_sam import build_sam2
-from tools.eval_division_iou_window import eval_division_by_video
+from tools.eval_division_iou_temporal import eval_division_by_video
 
 
 def parse_args():
@@ -35,6 +35,8 @@ def parse_args():
     parser.add_argument("--use_heatmap", type=bool, default=True, help="Whether to use heatmap")
     parser.add_argument("--checkpoint_num", type=int, default=None, help="Checkpoint number to use")
     parser.add_argument("--fps", type=int, default=4, help="fps for video gt and pred")
+    parser.add_argument("--iou_thresh_mother", type=float, default=0.5, help="IoU threshold for mothers")
+    parser.add_argument("--iou_thresh_bud", type=float, default=0.3, help="IoU threshold for buds")
 
     return parser.parse_args()
 
@@ -67,6 +69,8 @@ def process_directory(
     total_dirs: int,
     idx: int,
     fps: int,
+    iou_thresh_mother: float = 0.5,
+    iou_thresh_bud: float = 0.3,
 ):
     """Process a single directory with the cell tracker.
 
@@ -79,7 +83,8 @@ def process_directory(
         res_path: Path to save results
         idx: Index of current directory
         total_dirs: Total number of directories
-
+        iou_thresh_mother: IoU threshold for mothers
+        iou_thresh_bud: IoU threshold for buds
     """
     print(f"Processing directory {idx + 1}/{total_dirs}: {dir_path}")
     # Generate result path
@@ -104,23 +109,38 @@ def process_directory(
     )
     combined_pred_gt_videos(result_summary)
     print("-> Predictions are in :", result_path)
-    # example : dir_path = moma_N_3_checked/moma/val/CTC/12
-    # result_path = eval_model/model:moma_N3_checked_v100/data_vers:moma_N3_checked/12
 
-    gt_video_track_dir = dir_path.with_name(f"{dir_path.name}_GT") / "TRA" # moma_N_3_checked/moma/val/CTC/12_GT/TRA
+    # Chemin vers le répertoire GT
+    gt_video_track_dir = dir_path.with_name(f"{dir_path.name}_GT") / "TRA"
+
+    # Évaluation des divisions
     metrics_by_video = eval_division_by_video(
-            gt_video_track_dir ,
-            result_path,
-            delay=3,
-            iou_thresh=0.5,
-            gt_mask_prefix = "man_track",
+        gt_video_dir=gt_video_track_dir,
+        pred_video_dir=result_path,
+        temporal_tolerance=3,
+        max_future_frame_offset=3,
+        iou_thresh_mother=iou_thresh_mother,
+        iou_thresh_bud=iou_thresh_bud,
     )
-    print("-> Division evaluation with gt" )
+    metrics_by_video["gt_video_dir"] = str(gt_video_track_dir)
+    metrics_by_video["pred_video_dir"] = str(result_path)
+    metrics_by_video["params"] = {
+        "iou_thresh_mother": iou_thresh_mother,
+        "iou_thresh_bud": iou_thresh_bud,
+        "temporal_tolerance": 3,
+        "max_future_frame_offset": 3,
+    }
+
+    print("-> Division evaluation with GT")
     print(json.dumps(metrics_by_video, indent=2))
+
+    # Sauvegarde des métriques
     eval_division_video_path = result_summary / 'eval_div_video.json'
     eval_division_video_path.write_text(json.dumps(metrics_by_video, indent=2))
+
     print(f"Finished processing")
     return metrics_by_video
+
 
 
 def main():
@@ -159,29 +179,38 @@ def main():
 
         # Process each directory
         base_dir = Path(__file__).parents[1]
-        for idx, dir_path in enumerate(directories):
-            res_pred_path = Path(args.res_path) / f"model:{model_name}" / f"data_vers:{args.data_version}"
+        res_pred_path = Path(args.res_path) / f"model:{model_name}" / f"data_vers:{args.data_version}"
 
-            metrics_by_video= process_directory(
-                                                tracker=tracker,
-                                                dir_path=dir_path,
-                                                base_dir=base_dir,
-                                                model_name=model_name,
-                                                input_path=video_path,
-                                                res_path=res_pred_path,
-                                                total_dirs=len(directories),
-                                                idx=idx,
-                                                fps=args.fps
-                                            )
+        for idx, dir_path in enumerate(directories):
+
+            metrics_by_video = process_directory(
+                tracker=tracker,
+                dir_path=dir_path,
+                base_dir=base_dir,
+                model_name=model_name,
+                input_path=video_path,
+                res_path=res_pred_path,
+                total_dirs=len(directories),
+                idx=idx,
+                fps=args.fps,
+                iou_thresh_mother=args.iou_thresh_mother,
+                iou_thresh_bud=args.iou_thresh_bud,
+            )
             all_metrics_by_video.append(metrics_by_video)
-        if len(all_metrics_by_video)>1:
+
+        if len(all_metrics_by_video) > 1:
             total_metrics = aggregate_video_metrics(all_metrics_by_video)
             print("Overall metrics")
             print(json.dumps(total_metrics, indent=2))
+        else:
+            total_metrics = metrics_by_video
+        # Écriture des métriques globales dans un fichier JSON
+        val_metrics_path = res_pred_path / "val_metrics.json"
+        val_metrics_path.write_text(json.dumps(total_metrics, indent=2))
+        print(f"-> Total metrics saved to: {val_metrics_path}")
 
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 if __name__ == "__main__":

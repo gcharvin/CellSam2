@@ -298,36 +298,70 @@ def combined_pred_gt_videos(summary_pred_path : Path):
 
 
 def aggregate_video_metrics(all_metrics_by_video):
-    """
-    Agrège les métriques de plusieurs vidéos en un seul dictionnaire de métriques globales.
-
-    Args:
-        all_metrics_by_video: Liste de dictionnaires de métriques par vidéo.
-
-    Returns:
-        total_metrics: Dictionnaire des métriques globales.
-    """
-    total_tp = 0
-    total_fp = 0
-    total_fn = 0
+    """Aggregate metrics across all videos."""
+    total = {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "parentless_pred": 0,
+        "time_errors": [],
+        "iou_mother_scores": [],
+        "iou_bud_scores": [],
+        "eval_details": [],  # Renommée
+    }
 
     for metrics in all_metrics_by_video:
-        total_tp += metrics["tp"]
-        total_fp += metrics["fp"]
-        total_fn += metrics["fn"]
+        total["tp"] += metrics["metrics"]["tp"]
+        total["fp"] += metrics["metrics"]["fp"]
+        total["fn"] += metrics["metrics"]["fn"]
+        total["parentless_pred"] += metrics["metrics"]["parentless_pred"]
+
+        # Ajouter les erreurs temporelles et les scores IoU
+        if "avg_time_error" in metrics["metrics"]:
+            total["time_errors"].append(metrics["metrics"]["avg_time_error"])
+        if "avg_iou_mother" in metrics["metrics"]:
+            total["iou_mother_scores"].append(metrics["metrics"]["avg_iou_mother"])
+        if "avg_iou_bud" in metrics["metrics"]:
+            total["iou_bud_scores"].append(metrics["metrics"]["avg_iou_bud"])
+
+        # Ajout des triplets (gt_video_dir, pred_video_dir, params)
+        if "gt_video_dir" in metrics and "pred_video_dir" in metrics and "params" in metrics:
+            total["eval_details"].append({  # Utilisation de la nouvelle clé
+                "gt_video_dir": str(metrics["gt_video_dir"]),
+                "pred_video_dir": str(metrics["pred_video_dir"]),
+                "params": metrics["params"],
+            })
 
     # Calcul des métriques globales
-    precision = total_tp / (total_tp + total_fp + 1e-12)
-    recall = total_tp / (total_tp + total_fn + 1e-12)
-    f1 = 2 * precision * recall / (precision + recall + 1e-12)
+    precision = total["tp"] / (total["tp"] + total["fp"] + 1e-12)
+    recall = total["tp"] / (total["tp"] + total["fn"] + 1e-12)
+    f1 = 2 * precision * recall / (precision + recall + 1e-12) if (precision + recall) > 0 else 0.0
+
+    avg_time_error = np.mean(total["time_errors"]) if total["time_errors"] else 0.0
+    std_time_error = np.std(total["time_errors"]) if total["time_errors"] else 0.0
+
+    avg_iou_mother = np.mean(total["iou_mother_scores"]) if total["iou_mother_scores"] else 0.0
+    std_iou_mother = np.std(total["iou_mother_scores"]) if total["iou_mother_scores"] else 0.0
+
+    avg_iou_bud = np.mean(total["iou_bud_scores"]) if total["iou_bud_scores"] else 0.0
+    std_iou_bud = np.std(total["iou_bud_scores"]) if total["iou_bud_scores"] else 0.0
 
     total_metrics = {
-        "tp": total_tp,
-        "fp": total_fp,
-        "fn": total_fn,
-        "precision": round(precision,3),
-        "recall": round(recall,3),
-        "f1": round(f1,3)
+        "tp": total["tp"],
+        "fp": total["fp"],
+        "fn": total["fn"],
+        "parentless_pred": total["parentless_pred"],
+        "precision": round(precision, 3),
+        "recall": round(recall, 3),
+        "f1": round(f1, 3),
+        "avg_time_error": round(avg_time_error, 3),
+        "std_time_error": round(std_time_error, 3),
+        "avg_iou_mother": round(avg_iou_mother, 3),
+        "std_iou_mother": round(std_iou_mother, 3),
+        "avg_iou_bud": round(avg_iou_bud, 3),
+        "std_iou_bud": round(std_iou_bud, 3),
+        "eval_details": total["eval_details"],  # Nouvelle clé
     }
 
     return total_metrics
+
