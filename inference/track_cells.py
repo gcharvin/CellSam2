@@ -84,6 +84,11 @@ def parse_args():
         help="Run online bud->mother post-processing after tracking",
     )
     parser.add_argument(
+        "--postprocess_buds_global",
+        action="store_true",
+        help="Run global tracklet->mother post-processing after tracking",
+    )
+    parser.add_argument(
         "--bud_refractory",
         type=int,
         default=8,
@@ -118,6 +123,18 @@ def parse_args():
         type=float,
         default=0.1,
         help="Minimum score to accept a bud->mother assignment",
+    )
+    parser.add_argument(
+        "--bud_min_track_length",
+        type=int,
+        default=2,
+        help="Minimum candidate bud track length for global post-processing",
+    )
+    parser.add_argument(
+        "--bud_first_frames",
+        type=int,
+        default=4,
+        help="Number of early frames aggregated in global post-processing",
     )
     parser.add_argument(
         "--bud_w_dist",
@@ -226,7 +243,32 @@ def process_directory(
         max_frame_num_to_track=None,
     )
 
-    if args.postprocess_buds:
+    if args.postprocess_buds_global:
+        try:
+            from tools.online_bud_parentage import _assign_global
+
+            _assign_global(
+                seq_dir=result_path,
+                refractory_frames=args.bud_refractory,
+                max_dist_factor=args.bud_max_dist_factor,
+                bud_max_area_ratio=args.bud_max_area_ratio,
+                min_bud_area=args.bud_min_area,
+                min_mother_age=args.bud_min_mother_age,
+                min_score=args.bud_min_score,
+                min_track_length=args.bud_min_track_length,
+                first_frames=args.bud_first_frames,
+                w_dist=args.bud_w_dist,
+                w_size=args.bud_w_size,
+                w_motion=args.bud_w_motion,
+                w_contact=args.bud_w_contact,
+                motion_scale=args.bud_motion_scale,
+                interface_radius=args.bud_interface_radius,
+                out_suffix="_parented",
+                inplace=not args.bud_no_inplace,
+            )
+        except Exception as exc:
+            print(f"[postprocess_buds_global] failed for {result_path}: {exc}")
+    elif args.postprocess_buds:
         try:
             from tools.online_bud_parentage import _assign_online
 

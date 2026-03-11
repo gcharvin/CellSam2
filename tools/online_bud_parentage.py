@@ -11,12 +11,23 @@ from __future__ import annotations
 import argparse
 import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import cv2
 import numpy as np
+
+try:
+    from scipy.optimize import Bounds, LinearConstraint, milp
+
+    SCIPY_MILP_AVAILABLE = True
+except Exception:
+    Bounds = None
+    LinearConstraint = None
+    milp = None
+    SCIPY_MILP_AVAILABLE = False
 
 
 @dataclass
@@ -36,6 +47,14 @@ class Candidate:
     size_ratio: float
     motion: float
     contact: float
+
+
+@dataclass
+class TrackInfo:
+    track_id: int
+    start: int
+    end: int
+    parent: int
 
 
 def _list_sequence_dirs(root: Path) -> List[Path]:
@@ -134,6 +153,28 @@ def _write_res_track(path: Path, data: np.ndarray) -> None:
     np.savetxt(path, data, fmt="%d")
 
 
+def _score_pair(
+    dist: float,
+    dist_max: float,
+    size_ratio: float,
+    motion_score: float,
+    contact_score: float,
+    w_dist: float,
+    w_size: float,
+    w_motion: float,
+    w_contact: float,
+) -> float:
+    dist_score = max(0.0, 1.0 - (dist / max(dist_max, 1e-6)))
+    size_score = max(0.0, 1.0 - size_ratio)
+    total_weight = max(1e-6, w_dist + w_size + w_motion + w_contact)
+    return (
+        w_dist * dist_score
+        + w_size * size_score
+        + w_motion * motion_score
+        + w_contact * contact_score
+    ) / total_weight
+
+
 def _assign_online(
     seq_dir: Path,
     refractory_frames: int,
@@ -217,21 +258,23 @@ def _assign_online(
                 if dist_max <= 0 or dist > dist_max:
                     continue
 
-                dist_score = max(0.0, 1.0 - (dist / dist_max))
-                size_score = max(0.0, 1.0 - size_ratio)
                 motion_score = _motion_score(prev_centroids.get(mother_id), mother, radius, motion_scale)
                 contact_score = _contact_score(
                     bud_mask=masks[bud_id],
                     mother_mask=masks[mother_id],
                     interface_radius=interface_radius,
                 )
-                total_weight = max(1e-6, w_dist + w_size + w_motion + w_contact)
-                score = (
-                    w_dist * dist_score
-                    + w_size * size_score
-                    + w_motion * motion_score
-                    + w_contact * contact_score
-                ) / total_weight
+                score = _score_pair(
+                    dist=dist,
+                    dist_max=dist_max,
+                    size_ratio=size_ratio,
+                    motion_score=motion_score,
+                    contact_score=contact_score,
+                    w_dist=w_dist,
+                    w_size=w_size,
+                    w_motion=w_motion,
+                    w_contact=w_contact,
+                )
                 if score < min_score:
                     continue
 
@@ -297,15 +340,363 @@ def _assign_online(
             )
 
 
+def _load_track_infos(path: Path) -> Dict[int, TrackInfo]:
+    rows = _load_res_track(path)
+    infos: Dict[int, TrackInfo] = {}
+    for obj_id, start, end, parent in rows.tolist():
+        infos[int(obj_id)] = TrackInfo(
+            track_id=int(obj_id),
+            start=int(start),
+            end=int(end),
+            parent=int(parent),
+        )
+    return infos
+
+
+def _collect_frame_cache(mask_files: List[Path]):
+    masks: Dict[int, np.ndarray] = {}
+    stats_cache: Dict[int, Dict[int, ObjStats]] = {}
+    bin_masks: Dict[int, Dict[int, np.ndarray]] = {}
+
+    for frame_idx, mask_path in enumerate(mask_files):
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_ANYDEPTH)
+        if mask is None:
+            raise RuntimeError(f"Failed to read {mask_path}")
+        masks[frame_idx] = mask
+        stats = _stats_from_mask(mask)
+        stats_cache[frame_idx] = stats
+        bin_masks[frame_idx] = _binary_masks(mask, stats.keys())
+    return masks, stats_cache, bin_masks
+
+
+def _build_global_candidates(
+    track_infos: Dict[int, TrackInfo],
+    stats_cache: Dict[int, Dict[int, ObjStats]],
+    bin_masks: Dict[int, Dict[int, np.ndarray]],
+    refractory_frames: int,
+    max_dist_factor: float,
+    bud_max_area_ratio: float,
+    min_bud_area: int,
+    min_mother_age: int,
+    min_score: float,
+    min_track_length: int,
+    first_frames: int,
+    w_dist: float,
+    w_size: float,
+    w_motion: float,
+    w_contact: float,
+    motion_scale: float,
+    interface_radius: int,
+) -> Tuple[List[int], List[Candidate]]:
+    candidate_buds: List[int] = []
+    candidates: List[Candidate] = []
+
+    for bud_id, bud_track in sorted(track_infos.items(), key=lambda item: (item[1].start, item[0])):
+        if bud_track.start <= 0:
+            continue
+        track_length = bud_track.end - bud_track.start + 1
+        if track_length < min_track_length:
+            continue
+        start_stats = stats_cache.get(bud_track.start, {}).get(bud_id)
+        if start_stats is None or start_stats.area < min_bud_area:
+            continue
+        candidate_buds.append(bud_id)
+
+        end_frame = min(bud_track.end, bud_track.start + first_frames - 1)
+        frame_range = range(bud_track.start, end_frame + 1)
+        for mother_id, mother_track in track_infos.items():
+            if mother_id == bud_id:
+                continue
+            if mother_track.start > bud_track.start - min_mother_age:
+                continue
+            if mother_track.end < bud_track.start:
+                continue
+
+            score_parts: List[Candidate] = []
+            for frame_idx in frame_range:
+                frame_stats = stats_cache.get(frame_idx, {})
+                bud_stats = frame_stats.get(bud_id)
+                mother_stats = frame_stats.get(mother_id)
+                if bud_stats is None or mother_stats is None:
+                    continue
+                if mother_stats.area <= 0:
+                    continue
+                size_ratio = bud_stats.area / float(mother_stats.area)
+                if size_ratio > bud_max_area_ratio:
+                    continue
+                radius = _mother_radius(mother_stats.area)
+                dist = _distance(bud_stats, mother_stats)
+                dist_max = max_dist_factor * radius
+                if dist_max <= 0 or dist > dist_max:
+                    continue
+
+                prev_stats = stats_cache.get(frame_idx - 1, {}).get(mother_id)
+                motion_score = _motion_score(prev_stats, mother_stats, radius, motion_scale)
+                contact_score = _contact_score(
+                    bud_mask=bin_masks[frame_idx][bud_id],
+                    mother_mask=bin_masks[frame_idx][mother_id],
+                    interface_radius=interface_radius,
+                )
+                score = _score_pair(
+                    dist=dist,
+                    dist_max=dist_max,
+                    size_ratio=size_ratio,
+                    motion_score=motion_score,
+                    contact_score=contact_score,
+                    w_dist=w_dist,
+                    w_size=w_size,
+                    w_motion=w_motion,
+                    w_contact=w_contact,
+                )
+                score_parts.append(
+                    Candidate(
+                        bud_id=bud_id,
+                        mother_id=mother_id,
+                        frame_idx=frame_idx,
+                        score=score,
+                        dist=dist,
+                        size_ratio=size_ratio,
+                        motion=motion_score,
+                        contact=contact_score,
+                    )
+                )
+
+            if not score_parts:
+                continue
+
+            support = len(score_parts)
+            avg_score = sum(part.score for part in score_parts) / support
+            if avg_score < min_score:
+                continue
+            candidates.append(
+                Candidate(
+                    bud_id=bud_id,
+                    mother_id=mother_id,
+                    frame_idx=bud_track.start,
+                    score=avg_score,
+                    dist=sum(part.dist for part in score_parts) / support,
+                    size_ratio=sum(part.size_ratio for part in score_parts) / support,
+                    motion=sum(part.motion for part in score_parts) / support,
+                    contact=sum(part.contact for part in score_parts) / support,
+                )
+            )
+
+    return candidate_buds, candidates
+
+
+def _solve_global_greedy(
+    bud_ids: List[int],
+    candidates: List[Candidate],
+    track_infos: Dict[int, TrackInfo],
+    refractory_frames: int,
+) -> Dict[int, Candidate]:
+    assigned: Dict[int, Candidate] = {}
+    mother_frames: Dict[int, List[int]] = defaultdict(list)
+    for cand in sorted(candidates, key=lambda item: item.score, reverse=True):
+        if cand.bud_id in assigned:
+            continue
+        conflict = any(
+            abs(track_infos[cand.bud_id].start - frame) < refractory_frames
+            for frame in mother_frames[cand.mother_id]
+        )
+        if conflict:
+            continue
+        assigned[cand.bud_id] = cand
+        mother_frames[cand.mother_id].append(track_infos[cand.bud_id].start)
+    return assigned
+
+
+def _solve_global_ilp(
+    bud_ids: List[int],
+    candidates: List[Candidate],
+    track_infos: Dict[int, TrackInfo],
+    refractory_frames: int,
+) -> Dict[int, Candidate]:
+    if not SCIPY_MILP_AVAILABLE or not candidates:
+        return _solve_global_greedy(bud_ids, candidates, track_infos, refractory_frames)
+
+    cand_indices_by_bud: Dict[int, List[int]] = defaultdict(list)
+    for idx, cand in enumerate(candidates):
+        cand_indices_by_bud[cand.bud_id].append(idx)
+
+    num_cand = len(candidates)
+    orphan_offset = num_cand
+    num_vars = num_cand + len(bud_ids)
+    objective = np.zeros(num_vars, dtype=float)
+    integrality = np.ones(num_vars, dtype=int)
+    lower = np.zeros(num_vars, dtype=float)
+    upper = np.ones(num_vars, dtype=float)
+
+    for idx, cand in enumerate(candidates):
+        objective[idx] = -cand.score
+
+    rows = []
+    lb = []
+    ub = []
+
+    bud_to_orphan_idx = {
+        bud_id: orphan_offset + bud_position for bud_position, bud_id in enumerate(bud_ids)
+    }
+    for bud_id in bud_ids:
+        row = np.zeros(num_vars, dtype=float)
+        for idx in cand_indices_by_bud.get(bud_id, []):
+            row[idx] = 1.0
+        row[bud_to_orphan_idx[bud_id]] = 1.0
+        rows.append(row)
+        lb.append(1.0)
+        ub.append(1.0)
+
+    candidates_by_mother: Dict[int, List[int]] = defaultdict(list)
+    for idx, cand in enumerate(candidates):
+        candidates_by_mother[cand.mother_id].append(idx)
+    for mother_id, mother_cands in candidates_by_mother.items():
+        for left_pos, left_idx in enumerate(mother_cands):
+            left_bud = candidates[left_idx].bud_id
+            left_start = track_infos[left_bud].start
+            for right_idx in mother_cands[left_pos + 1 :]:
+                right_bud = candidates[right_idx].bud_id
+                right_start = track_infos[right_bud].start
+                if abs(left_start - right_start) >= refractory_frames:
+                    continue
+                row = np.zeros(num_vars, dtype=float)
+                row[left_idx] = 1.0
+                row[right_idx] = 1.0
+                rows.append(row)
+                lb.append(-np.inf)
+                ub.append(1.0)
+
+    constraints = LinearConstraint(np.vstack(rows), np.asarray(lb), np.asarray(ub))
+    result = milp(
+        c=objective,
+        integrality=integrality,
+        bounds=Bounds(lower, upper),
+        constraints=constraints,
+    )
+    if result.x is None or not result.success:
+        return _solve_global_greedy(bud_ids, candidates, track_infos, refractory_frames)
+
+    assigned: Dict[int, Candidate] = {}
+    chosen = result.x[:num_cand] > 0.5
+    for idx, use_edge in enumerate(chosen.tolist()):
+        if use_edge:
+            assigned[candidates[idx].bud_id] = candidates[idx]
+    return assigned
+
+
+def _assign_global(
+    seq_dir: Path,
+    refractory_frames: int,
+    max_dist_factor: float,
+    bud_max_area_ratio: float,
+    min_bud_area: int,
+    min_mother_age: int,
+    min_score: float,
+    min_track_length: int,
+    first_frames: int,
+    w_dist: float,
+    w_size: float,
+    w_motion: float,
+    w_contact: float,
+    motion_scale: float,
+    interface_radius: int,
+    out_suffix: str,
+    inplace: bool,
+) -> None:
+    mask_files = _sorted_mask_files(seq_dir)
+    if not mask_files:
+        raise ValueError(f"No mask*.tif found in {seq_dir}")
+
+    res_track_path = seq_dir / "res_track.txt"
+    res_track = _load_res_track(res_track_path)
+    if res_track.size == 0:
+        return
+
+    track_infos = _load_track_infos(res_track_path)
+    _, stats_cache, bin_masks = _collect_frame_cache(mask_files)
+    bud_ids, candidates = _build_global_candidates(
+        track_infos=track_infos,
+        stats_cache=stats_cache,
+        bin_masks=bin_masks,
+        refractory_frames=refractory_frames,
+        max_dist_factor=max_dist_factor,
+        bud_max_area_ratio=bud_max_area_ratio,
+        min_bud_area=min_bud_area,
+        min_mother_age=min_mother_age,
+        min_score=min_score,
+        min_track_length=min_track_length,
+        first_frames=first_frames,
+        w_dist=w_dist,
+        w_size=w_size,
+        w_motion=w_motion,
+        w_contact=w_contact,
+        motion_scale=motion_scale,
+        interface_radius=interface_radius,
+    )
+    assigned = _solve_global_ilp(
+        bud_ids=bud_ids,
+        candidates=candidates,
+        track_infos=track_infos,
+        refractory_frames=refractory_frames,
+    )
+
+    for bud_id in bud_ids:
+        bud_mask = res_track[:, 0] == bud_id
+        if bud_mask.any():
+            res_track[bud_mask, 3] = 0
+    for bud_id, cand in assigned.items():
+        bud_mask = res_track[:, 0] == bud_id
+        if bud_mask.any():
+            res_track[bud_mask, 3] = cand.mother_id
+
+    out_path = res_track_path if inplace else seq_dir / f"res_track{out_suffix}.txt"
+    _write_res_track(out_path, res_track)
+
+    best_by_bud = {cand.bud_id: cand for cand in assigned.values()}
+    by_bud_candidates: Dict[int, List[Candidate]] = defaultdict(list)
+    for cand in candidates:
+        by_bud_candidates[cand.bud_id].append(cand)
+    summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
+    with summary_path.open("w") as f:
+        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,status,num_candidates\n")
+        for bud_id in sorted(bud_ids):
+            if bud_id in best_by_bud:
+                cand = best_by_bud[bud_id]
+                status = "assigned"
+            else:
+                cand = max(
+                    by_bud_candidates.get(bud_id, []),
+                    key=lambda item: item.score,
+                    default=Candidate(
+                        bud_id=bud_id,
+                        mother_id=0,
+                        frame_idx=track_infos[bud_id].start,
+                        score=0.0,
+                        dist=0.0,
+                        size_ratio=0.0,
+                        motion=0.0,
+                        contact=0.0,
+                    ),
+                )
+                status = "orphan"
+            f.write(
+                f"{bud_id},{cand.mother_id},{cand.frame_idx},{cand.score:.4f},"
+                f"{cand.dist:.2f},{cand.size_ratio:.4f},{cand.motion:.4f},"
+                f"{cand.contact:.4f},{status},{len(by_bud_candidates.get(bud_id, []))}\n"
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Online bud parentage post-processing")
     parser.add_argument("--pred_root", required=True, help="Prediction root (sequence dir or parent)")
+    parser.add_argument("--mode", choices=["online", "global"], default="online", help="Assignment mode")
     parser.add_argument("--refractory", type=int, default=8, help="Refractory frames per mother")
     parser.add_argument("--max_dist_factor", type=float, default=2.5, help="Max dist = factor * mother radius")
     parser.add_argument("--bud_max_area_ratio", type=float, default=0.6, help="Max bud/mother area ratio")
     parser.add_argument("--min_bud_area", type=int, default=10, help="Minimum bud area")
     parser.add_argument("--min_mother_age", type=int, default=3, help="Min age (frames) for a mother candidate")
     parser.add_argument("--min_score", type=float, default=0.1, help="Minimum score for assignment")
+    parser.add_argument("--min_track_length", type=int, default=2, help="Minimum candidate bud track length for global mode")
+    parser.add_argument("--first_frames", type=int, default=4, help="Number of early frames aggregated in global mode")
     parser.add_argument("--w_dist", type=float, default=0.6, help="Weight for distance score")
     parser.add_argument("--w_size", type=float, default=0.3, help="Weight for size score")
     parser.add_argument("--w_motion", type=float, default=0.1, help="Weight for motion score")
@@ -318,23 +709,44 @@ def main() -> None:
 
     pred_root = Path(args.pred_root)
     for seq_dir in _list_sequence_dirs(pred_root):
-        _assign_online(
-            seq_dir=seq_dir,
-            refractory_frames=args.refractory,
-            max_dist_factor=args.max_dist_factor,
-            bud_max_area_ratio=args.bud_max_area_ratio,
-            min_bud_area=args.min_bud_area,
-            min_mother_age=args.min_mother_age,
-            min_score=args.min_score,
-            w_dist=args.w_dist,
-            w_size=args.w_size,
-            w_motion=args.w_motion,
-            w_contact=args.w_contact,
-            motion_scale=args.motion_scale,
-            interface_radius=args.interface_radius,
-            out_suffix=args.out_suffix,
-            inplace=args.inplace,
-        )
+        if args.mode == "global":
+            _assign_global(
+                seq_dir=seq_dir,
+                refractory_frames=args.refractory,
+                max_dist_factor=args.max_dist_factor,
+                bud_max_area_ratio=args.bud_max_area_ratio,
+                min_bud_area=args.min_bud_area,
+                min_mother_age=args.min_mother_age,
+                min_score=args.min_score,
+                min_track_length=args.min_track_length,
+                first_frames=args.first_frames,
+                w_dist=args.w_dist,
+                w_size=args.w_size,
+                w_motion=args.w_motion,
+                w_contact=args.w_contact,
+                motion_scale=args.motion_scale,
+                interface_radius=args.interface_radius,
+                out_suffix=args.out_suffix,
+                inplace=args.inplace,
+            )
+        else:
+            _assign_online(
+                seq_dir=seq_dir,
+                refractory_frames=args.refractory,
+                max_dist_factor=args.max_dist_factor,
+                bud_max_area_ratio=args.bud_max_area_ratio,
+                min_bud_area=args.min_bud_area,
+                min_mother_age=args.min_mother_age,
+                min_score=args.min_score,
+                w_dist=args.w_dist,
+                w_size=args.w_size,
+                w_motion=args.w_motion,
+                w_contact=args.w_contact,
+                motion_scale=args.motion_scale,
+                interface_radius=args.interface_radius,
+                out_suffix=args.out_suffix,
+                inplace=args.inplace,
+            )
 
 
 if __name__ == "__main__":
