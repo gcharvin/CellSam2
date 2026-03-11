@@ -78,6 +78,76 @@ def parse_args():
     parser.add_argument(
         "--checkpoint_num", type=int, default=None, help="Checkpoint number to use"
     )
+    parser.add_argument(
+        "--postprocess_buds",
+        action="store_true",
+        help="Run online bud->mother post-processing after tracking",
+    )
+    parser.add_argument(
+        "--bud_refractory",
+        type=int,
+        default=8,
+        help="Refractory frames per mother during bud post-processing",
+    )
+    parser.add_argument(
+        "--bud_max_dist_factor",
+        type=float,
+        default=2.5,
+        help="Max bud distance = factor * mother radius",
+    )
+    parser.add_argument(
+        "--bud_max_area_ratio",
+        type=float,
+        default=0.6,
+        help="Max bud/mother area ratio",
+    )
+    parser.add_argument(
+        "--bud_min_area",
+        type=int,
+        default=10,
+        help="Minimum bud area",
+    )
+    parser.add_argument(
+        "--bud_min_mother_age",
+        type=int,
+        default=3,
+        help="Minimum age (frames) for a mother candidate",
+    )
+    parser.add_argument(
+        "--bud_min_score",
+        type=float,
+        default=0.1,
+        help="Minimum score to accept a bud->mother assignment",
+    )
+    parser.add_argument(
+        "--bud_w_dist",
+        type=float,
+        default=0.6,
+        help="Weight for distance score",
+    )
+    parser.add_argument(
+        "--bud_w_size",
+        type=float,
+        default=0.3,
+        help="Weight for size score",
+    )
+    parser.add_argument(
+        "--bud_w_motion",
+        type=float,
+        default=0.1,
+        help="Weight for motion score",
+    )
+    parser.add_argument(
+        "--bud_motion_scale",
+        type=float,
+        default=2.0,
+        help="Scale for motion penalty",
+    )
+    parser.add_argument(
+        "--bud_no_inplace",
+        action="store_true",
+        help="Write res_track_parented.txt instead of overwriting res_track.txt",
+    )
     return parser.parse_args()
 
 
@@ -108,6 +178,7 @@ def process_directory(
     res_path: Path,
     total_dirs: int,
     idx: int,
+    args,
 ):
     """Process a single directory with the cell tracker.
 
@@ -142,6 +213,28 @@ def process_directory(
         offload_state_to_cpu=True,
         max_frame_num_to_track=None,
     )
+
+    if args.postprocess_buds:
+        try:
+            from tools.online_bud_parentage import _assign_online
+
+            _assign_online(
+                seq_dir=result_path,
+                refractory_frames=args.bud_refractory,
+                max_dist_factor=args.bud_max_dist_factor,
+                bud_max_area_ratio=args.bud_max_area_ratio,
+                min_bud_area=args.bud_min_area,
+                min_mother_age=args.bud_min_mother_age,
+                min_score=args.bud_min_score,
+                w_dist=args.bud_w_dist,
+                w_size=args.bud_w_size,
+                w_motion=args.bud_w_motion,
+                motion_scale=args.bud_motion_scale,
+                out_suffix="_parented",
+                inplace=not args.bud_no_inplace,
+            )
+        except Exception as exc:
+            print(f"[postprocess_buds] failed for {result_path}: {exc}")
     print(f"Finished processing: {dir_path}")
 
 
@@ -193,6 +286,7 @@ def main():
                 res_path=args.res_path,
                 total_dirs=len(directories),
                 idx=idx,
+                args=args,
             )
 
     except ValueError as e:
