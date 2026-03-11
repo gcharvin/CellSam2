@@ -47,6 +47,10 @@ class Candidate:
     size_ratio: float
     motion: float
     contact: float
+    neck: float
+    angle: float
+    track_quality: float
+    margin: float
 
 
 @dataclass
@@ -138,6 +142,62 @@ def _contact_score(
     return min(1.0, contact_pixels / float(bud_area))
 
 
+def _edge_proximity_score(
+    bud_mask: np.ndarray,
+    mother_mask: np.ndarray,
+    interface_radius: int,
+) -> float:
+    if not bud_mask.any() or not mother_mask.any():
+        return 0.0
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    bud_uint8 = bud_mask.astype(np.uint8)
+    bud_border = bud_uint8.astype(bool) & (~cv2.erode(bud_uint8, kernel, iterations=1).astype(bool))
+    if not bud_border.any():
+        bud_border = bud_mask
+    dist_to_mother = cv2.distanceTransform((~mother_mask).astype(np.uint8), cv2.DIST_L2, 3)
+    border_dist = dist_to_mother[bud_border]
+    if border_dist.size == 0:
+        return 0.0
+    min_dist = float(border_dist.min())
+    scale = max(float(interface_radius), 1.0)
+    return math.exp(-min_dist / scale)
+
+
+def _neck_score(
+    bud_mask: np.ndarray,
+    mother_mask: np.ndarray,
+    interface_radius: int,
+) -> float:
+    contact = _contact_score(bud_mask, mother_mask, interface_radius)
+    proximity = _edge_proximity_score(bud_mask, mother_mask, interface_radius)
+    return 0.6 * contact + 0.4 * proximity
+
+
+def _angle_consistency(direction_vectors: List[Tuple[float, float]]) -> float:
+    if not direction_vectors:
+        return 0.0
+    if len(direction_vectors) == 1:
+        return 1.0
+    arr = np.asarray(direction_vectors, dtype=float)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-6)
+    arr = arr / norms
+    mean_vec = arr.mean(axis=0)
+    return float(np.clip(np.linalg.norm(mean_vec), 0.0, 1.0))
+
+
+def _track_quality_score(track_length: int, bud_areas: List[int], first_frames: int) -> float:
+    if track_length <= 0:
+        return 0.0
+    length_score = min(1.0, track_length / max(float(first_frames), 1.0))
+    if not bud_areas:
+        return 0.5 * length_score
+    mean_area = max(float(np.mean(bud_areas)), 1.0)
+    cv_area = float(np.std(bud_areas) / mean_area)
+    stability = math.exp(-cv_area)
+    return float(np.clip(length_score * stability, 0.0, 1.0))
+
+
 def _load_res_track(path: Path) -> np.ndarray:
     if not path.exists():
         return np.zeros((0, 4), dtype=int)
@@ -173,6 +233,60 @@ def _score_pair(
         + w_motion * motion_score
         + w_contact * contact_score
     ) / total_weight
+
+
+def _score_aggregate_pair(
+    dist: float,
+    dist_max: float,
+    size_ratio: float,
+    motion_score: float,
+    contact_score: float,
+    neck_score: float,
+    angle_score: float,
+    track_quality: float,
+    w_dist: float,
+    w_size: float,
+    w_motion: float,
+    w_contact: float,
+    w_neck: float,
+    w_angle: float,
+    w_track_quality: float,
+) -> float:
+    dist_score = max(0.0, 1.0 - (dist / max(dist_max, 1e-6)))
+    size_score = max(0.0, 1.0 - size_ratio)
+    total_weight = max(
+        1e-6,
+        w_dist + w_size + w_motion + w_contact + w_neck + w_angle + w_track_quality,
+    )
+    return (
+        w_dist * dist_score
+        + w_size * size_score
+        + w_motion * motion_score
+        + w_contact * contact_score
+        + w_neck * neck_score
+        + w_angle * angle_score
+        + w_track_quality * track_quality
+    ) / total_weight
+
+
+def _apply_margin_scores(candidates: List[Candidate], w_margin: float) -> List[Candidate]:
+    if not candidates or w_margin <= 0.0:
+        return candidates
+    by_bud: Dict[int, List[Candidate]] = defaultdict(list)
+    for cand in candidates:
+        by_bud[cand.bud_id].append(cand)
+
+    for bud_candidates in by_bud.values():
+        scores = sorted((cand.score for cand in bud_candidates), reverse=True)
+        if not scores:
+            continue
+        best_score = scores[0]
+        second_score = scores[1] if len(scores) > 1 else 0.0
+        for cand in bud_candidates:
+            best_other = second_score if cand.score == best_score else best_score
+            cand.margin = cand.score - best_other
+            cand.score = float(np.clip(cand.score + w_margin * cand.margin, 0.0, 1.0))
+    return candidates
 
 
 def _assign_online(
@@ -288,6 +402,10 @@ def _assign_online(
                         size_ratio=size_ratio,
                         motion=motion_score,
                         contact=contact_score,
+                        neck=contact_score,
+                        angle=1.0,
+                        track_quality=1.0,
+                        margin=0.0,
                     )
                 )
 
@@ -331,12 +449,13 @@ def _assign_online(
     # Write assignment summary
     summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
     with summary_path.open("w") as f:
-        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact\n")
+        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,neck,angle,track_quality,margin\n")
         for cand in assignments:
             f.write(
                 f"{cand.bud_id},{cand.mother_id},{cand.frame_idx},"
                 f"{cand.score:.4f},{cand.dist:.2f},{cand.size_ratio:.4f},"
-                f"{cand.motion:.4f},{cand.contact:.4f}\n"
+                f"{cand.motion:.4f},{cand.contact:.4f},{cand.neck:.4f},"
+                f"{cand.angle:.4f},{cand.track_quality:.4f},{cand.margin:.4f}\n"
             )
 
 
@@ -383,6 +502,9 @@ def _aggregate_pair_candidate(
     w_size: float,
     w_motion: float,
     w_contact: float,
+    w_neck: float,
+    w_angle: float,
+    w_track_quality: float,
     motion_scale: float,
     interface_radius: int,
 ) -> Candidate | None:
@@ -390,6 +512,9 @@ def _aggregate_pair_candidate(
     end_frame = min(bud_track.end, bud_track.start + first_frames - 1)
     frame_range = range(bud_track.start, end_frame + 1)
     score_parts: List[Candidate] = []
+    direction_vectors: List[Tuple[float, float]] = []
+    bud_areas: List[int] = []
+    dist_max_values: List[float] = []
     for frame_idx in frame_range:
         frame_stats = stats_cache.get(frame_idx, {})
         bud_stats = frame_stats.get(bud_id)
@@ -407,6 +532,9 @@ def _aggregate_pair_candidate(
         if dist_max <= 0 or dist > dist_max:
             continue
 
+        direction_vectors.append((bud_stats.cx - mother_stats.cx, bud_stats.cy - mother_stats.cy))
+        bud_areas.append(bud_stats.area)
+        dist_max_values.append(dist_max)
         prev_stats = stats_cache.get(frame_idx - 1, {}).get(mother_id)
         motion_score = _motion_score(prev_stats, mother_stats, radius, motion_scale)
         contact_score = _contact_score(
@@ -414,27 +542,24 @@ def _aggregate_pair_candidate(
             mother_mask=bin_masks[frame_idx][mother_id],
             interface_radius=interface_radius,
         )
-        score = _score_pair(
-            dist=dist,
-            dist_max=dist_max,
-            size_ratio=size_ratio,
-            motion_score=motion_score,
-            contact_score=contact_score,
-            w_dist=w_dist,
-            w_size=w_size,
-            w_motion=w_motion,
-            w_contact=w_contact,
-        )
         score_parts.append(
             Candidate(
                 bud_id=bud_id,
                 mother_id=mother_id,
                 frame_idx=frame_idx,
-                score=score,
+                score=0.0,
                 dist=dist,
                 size_ratio=size_ratio,
                 motion=motion_score,
                 contact=contact_score,
+                neck=_neck_score(
+                    bud_mask=bin_masks[frame_idx][bud_id],
+                    mother_mask=bin_masks[frame_idx][mother_id],
+                    interface_radius=interface_radius,
+                ),
+                angle=0.0,
+                track_quality=0.0,
+                margin=0.0,
             )
         )
 
@@ -442,7 +567,29 @@ def _aggregate_pair_candidate(
         return None
 
     support = len(score_parts)
-    avg_score = sum(part.score for part in score_parts) / support
+    angle_score = _angle_consistency(direction_vectors)
+    track_quality = _track_quality_score(
+        track_length=bud_track.end - bud_track.start + 1,
+        bud_areas=bud_areas,
+        first_frames=first_frames,
+    )
+    avg_score = _score_aggregate_pair(
+        dist=sum(part.dist for part in score_parts) / support,
+        dist_max=sum(dist_max_values) / max(len(dist_max_values), 1),
+        size_ratio=sum(part.size_ratio for part in score_parts) / support,
+        motion_score=sum(part.motion for part in score_parts) / support,
+        contact_score=sum(part.contact for part in score_parts) / support,
+        neck_score=sum(part.neck for part in score_parts) / support,
+        angle_score=angle_score,
+        track_quality=track_quality,
+        w_dist=w_dist,
+        w_size=w_size,
+        w_motion=w_motion,
+        w_contact=w_contact,
+        w_neck=w_neck,
+        w_angle=w_angle,
+        w_track_quality=w_track_quality,
+    )
     if avg_score < min_score:
         return None
     return Candidate(
@@ -454,6 +601,10 @@ def _aggregate_pair_candidate(
         size_ratio=sum(part.size_ratio for part in score_parts) / support,
         motion=sum(part.motion for part in score_parts) / support,
         contact=sum(part.contact for part in score_parts) / support,
+        neck=sum(part.neck for part in score_parts) / support,
+        angle=angle_score,
+        track_quality=track_quality,
+        margin=0.0,
     )
 
 
@@ -473,6 +624,10 @@ def _build_global_candidates(
     w_size: float,
     w_motion: float,
     w_contact: float,
+    w_neck: float,
+    w_angle: float,
+    w_track_quality: float,
+    w_margin: float,
     motion_scale: float,
     interface_radius: int,
 ) -> Tuple[List[int], List[Candidate]]:
@@ -514,6 +669,9 @@ def _build_global_candidates(
                 w_size=w_size,
                 w_motion=w_motion,
                 w_contact=w_contact,
+                w_neck=w_neck,
+                w_angle=w_angle,
+                w_track_quality=w_track_quality,
                 motion_scale=motion_scale,
                 interface_radius=interface_radius,
             )
@@ -521,7 +679,7 @@ def _build_global_candidates(
                 continue
             candidates.append(candidate)
 
-    return candidate_buds, candidates
+    return candidate_buds, _apply_margin_scores(candidates, w_margin)
 
 
 def _load_parentage_scores(seq_dir: Path, out_suffix: str) -> Dict[int, float]:
@@ -662,6 +820,10 @@ def _assign_global(
     w_size: float,
     w_motion: float,
     w_contact: float,
+    w_neck: float,
+    w_angle: float,
+    w_track_quality: float,
+    w_margin: float,
     motion_scale: float,
     interface_radius: int,
     out_suffix: str,
@@ -694,6 +856,10 @@ def _assign_global(
         w_size=w_size,
         w_motion=w_motion,
         w_contact=w_contact,
+        w_neck=w_neck,
+        w_angle=w_angle,
+        w_track_quality=w_track_quality,
+        w_margin=w_margin,
         motion_scale=motion_scale,
         interface_radius=interface_radius,
     )
@@ -722,7 +888,7 @@ def _assign_global(
         by_bud_candidates[cand.bud_id].append(cand)
     summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
     with summary_path.open("w") as f:
-        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,status,num_candidates\n")
+        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,neck,angle,track_quality,margin,status,num_candidates\n")
         for bud_id in sorted(bud_ids):
             if bud_id in best_by_bud:
                 cand = best_by_bud[bud_id]
@@ -740,13 +906,19 @@ def _assign_global(
                         size_ratio=0.0,
                         motion=0.0,
                         contact=0.0,
+                        neck=0.0,
+                        angle=0.0,
+                        track_quality=0.0,
+                        margin=0.0,
                     ),
                 )
                 status = "orphan"
             f.write(
                 f"{bud_id},{cand.mother_id},{cand.frame_idx},{cand.score:.4f},"
                 f"{cand.dist:.2f},{cand.size_ratio:.4f},{cand.motion:.4f},"
-                f"{cand.contact:.4f},{status},{len(by_bud_candidates.get(bud_id, []))}\n"
+                f"{cand.contact:.4f},{cand.neck:.4f},{cand.angle:.4f},"
+                f"{cand.track_quality:.4f},{cand.margin:.4f},{status},"
+                f"{len(by_bud_candidates.get(bud_id, []))}\n"
             )
 
 
@@ -789,6 +961,10 @@ def _assign_hybrid(
     w_size: float,
     w_motion: float,
     w_contact: float,
+    w_neck: float,
+    w_angle: float,
+    w_track_quality: float,
+    w_margin: float,
     motion_scale: float,
     interface_radius: int,
     out_suffix: str,
@@ -821,6 +997,10 @@ def _assign_hybrid(
         w_size=w_size,
         w_motion=w_motion,
         w_contact=w_contact,
+        w_neck=w_neck,
+        w_angle=w_angle,
+        w_track_quality=w_track_quality,
+        w_margin=w_margin,
         motion_scale=motion_scale,
         interface_radius=interface_radius,
     )
@@ -863,6 +1043,10 @@ def _assign_hybrid(
                 size_ratio=0.0,
                 motion=0.0,
                 contact=0.0,
+                neck=0.0,
+                angle=0.0,
+                track_quality=0.0,
+                margin=0.0,
             )
         else:
             flex_buds.add(bud_id)
@@ -907,7 +1091,7 @@ def _assign_hybrid(
         by_bud_candidates[cand.bud_id].append(cand)
     summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
     with summary_path.open("w") as f:
-        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,status,num_candidates\n")
+        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact,neck,angle,track_quality,margin,status,num_candidates\n")
         for bud_id in sorted(bud_ids):
             if bud_id in locked_assignments:
                 cand = locked_assignments[bud_id]
@@ -928,13 +1112,19 @@ def _assign_hybrid(
                         size_ratio=0.0,
                         motion=0.0,
                         contact=0.0,
+                        neck=0.0,
+                        angle=0.0,
+                        track_quality=0.0,
+                        margin=0.0,
                     ),
                 )
                 status = "orphan"
             f.write(
                 f"{bud_id},{cand.mother_id},{cand.frame_idx},{cand.score:.4f},"
                 f"{cand.dist:.2f},{cand.size_ratio:.4f},{cand.motion:.4f},"
-                f"{cand.contact:.4f},{status},{len(by_bud_candidates.get(bud_id, []))}\n"
+                f"{cand.contact:.4f},{cand.neck:.4f},{cand.angle:.4f},"
+                f"{cand.track_quality:.4f},{cand.margin:.4f},{status},"
+                f"{len(by_bud_candidates.get(bud_id, []))}\n"
             )
 
 
@@ -956,6 +1146,10 @@ def main() -> None:
     parser.add_argument("--w_size", type=float, default=0.3, help="Weight for size score")
     parser.add_argument("--w_motion", type=float, default=0.1, help="Weight for motion score")
     parser.add_argument("--w_contact", type=float, default=0.0, help="Weight for mother-bud contact score")
+    parser.add_argument("--w_neck", type=float, default=0.25, help="Weight for neck/interface score in global and hybrid modes")
+    parser.add_argument("--w_angle", type=float, default=0.20, help="Weight for angle consistency score in global and hybrid modes")
+    parser.add_argument("--w_track_quality", type=float, default=0.10, help="Weight for bud track quality score in global and hybrid modes")
+    parser.add_argument("--w_margin", type=float, default=0.15, help="Weight for relative margin against competing mothers in global and hybrid modes")
     parser.add_argument("--motion_scale", type=float, default=2.0, help="Scale for motion penalty")
     parser.add_argument("--interface_radius", type=int, default=4, help="Dilation radius used to measure bud-mother contact")
     parser.add_argument("--out_suffix", type=str, default="_parented", help="Suffix for output files")
@@ -979,6 +1173,10 @@ def main() -> None:
                 w_size=args.w_size,
                 w_motion=args.w_motion,
                 w_contact=args.w_contact,
+                w_neck=args.w_neck,
+                w_angle=args.w_angle,
+                w_track_quality=args.w_track_quality,
+                w_margin=args.w_margin,
                 motion_scale=args.motion_scale,
                 interface_radius=args.interface_radius,
                 out_suffix=args.out_suffix,
@@ -1001,6 +1199,10 @@ def main() -> None:
                 w_size=args.w_size,
                 w_motion=args.w_motion,
                 w_contact=args.w_contact,
+                w_neck=args.w_neck,
+                w_angle=args.w_angle,
+                w_track_quality=args.w_track_quality,
+                w_margin=args.w_margin,
                 motion_scale=args.motion_scale,
                 interface_radius=args.interface_radius,
                 out_suffix=args.out_suffix,

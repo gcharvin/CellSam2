@@ -178,6 +178,30 @@ def parse_args():
         help="Weight for bud-mother contact score",
     )
     parser.add_argument(
+        "--bud_w_neck",
+        type=float,
+        default=0.25,
+        help="Weight for bud-mother neck/interface score in global and hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_w_angle",
+        type=float,
+        default=0.20,
+        help="Weight for angle consistency score in global and hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_w_track_quality",
+        type=float,
+        default=0.10,
+        help="Weight for bud track quality score in global and hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_w_margin",
+        type=float,
+        default=0.15,
+        help="Weight for candidate margin score in global and hybrid post-processing",
+    )
+    parser.add_argument(
         "--bud_motion_scale",
         type=float,
         default=2.0,
@@ -280,6 +304,10 @@ def process_directory(
                 w_size=args.bud_w_size,
                 w_motion=args.bud_w_motion,
                 w_contact=args.bud_w_contact,
+                w_neck=args.bud_w_neck,
+                w_angle=args.bud_w_angle,
+                w_track_quality=args.bud_w_track_quality,
+                w_margin=args.bud_w_margin,
                 motion_scale=args.bud_motion_scale,
                 interface_radius=args.bud_interface_radius,
                 out_suffix="_parented",
@@ -305,6 +333,10 @@ def process_directory(
                 w_size=args.bud_w_size,
                 w_motion=args.bud_w_motion,
                 w_contact=args.bud_w_contact,
+                w_neck=args.bud_w_neck,
+                w_angle=args.bud_w_angle,
+                w_track_quality=args.bud_w_track_quality,
+                w_margin=args.bud_w_margin,
                 motion_scale=args.bud_motion_scale,
                 interface_radius=args.bud_interface_radius,
                 out_suffix="_parented",
