@@ -1,0 +1,34 @@
+{
+  "exp_id": "20260311_1540_b139340_example-tag",
+  "tag": "example-tag",
+  "status": "planned",
+  "created_at": "2026-03-11T15:40:00",
+  "machine": "GC-CALCUL-306",
+  "dataset": {
+    "name": "moma",
+    "path": "/homes/Gilles/Data/DetecDivProjects/anais/bud4/classification/celltracktr_5/trainingdataset/moma"
+  },
+  "repos": {
+    "cellsam2": {
+      "path": "/home/charvin-admin/Documents/cellSAM2/CellSam2",
+      "branch": "codex/yeast-bud-parentage",
+      "commit": "b139340",
+      "dirty": false
+    },
+    "cellhota": {
+      "path": "/home/charvin-admin/Documents/github/Cell-HOTA",
+      "branch": "master",
+      "commit": "77d9bb2",
+      "dirty": false
+    }
+  },
+  "commands": {
+    "train": "",
+    "inference": "",
+    "evaluation": ""
+  },
+  "artifacts": {
+    "best_checkpoint": "",
+    "notes": ""
+  }
+}
