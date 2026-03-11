@@ -89,6 +89,11 @@ def parse_args():
         help="Run global tracklet->mother post-processing after tracking",
     )
     parser.add_argument(
+        "--postprocess_buds_hybrid",
+        action="store_true",
+        help="Run hybrid post-processing using existing online proposals plus global optimization",
+    )
+    parser.add_argument(
         "--bud_refractory",
         type=int,
         default=8,
@@ -135,6 +140,18 @@ def parse_args():
         type=int,
         default=4,
         help="Number of early frames aggregated in global post-processing",
+    )
+    parser.add_argument(
+        "--bud_proposal_bonus",
+        type=float,
+        default=0.05,
+        help="Bonus added to the current proposal edge in hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_proposal_lock_score",
+        type=float,
+        default=0.60,
+        help="Proposal score above which non-conflicting assignments are locked in hybrid post-processing",
     )
     parser.add_argument(
         "--bud_w_dist",
@@ -243,7 +260,34 @@ def process_directory(
         max_frame_num_to_track=None,
     )
 
-    if args.postprocess_buds_global:
+    if args.postprocess_buds_hybrid:
+        try:
+            from tools.online_bud_parentage import _assign_hybrid
+
+            _assign_hybrid(
+                seq_dir=result_path,
+                refractory_frames=args.bud_refractory,
+                max_dist_factor=args.bud_max_dist_factor,
+                bud_max_area_ratio=args.bud_max_area_ratio,
+                min_bud_area=args.bud_min_area,
+                min_mother_age=args.bud_min_mother_age,
+                min_score=args.bud_min_score,
+                min_track_length=args.bud_min_track_length,
+                first_frames=args.bud_first_frames,
+                proposal_bonus=args.bud_proposal_bonus,
+                proposal_lock_score=args.bud_proposal_lock_score,
+                w_dist=args.bud_w_dist,
+                w_size=args.bud_w_size,
+                w_motion=args.bud_w_motion,
+                w_contact=args.bud_w_contact,
+                motion_scale=args.bud_motion_scale,
+                interface_radius=args.bud_interface_radius,
+                out_suffix="_parented",
+                inplace=not args.bud_no_inplace,
+            )
+        except Exception as exc:
+            print(f"[postprocess_buds_hybrid] failed for {result_path}: {exc}")
+    elif args.postprocess_buds_global:
         try:
             from tools.online_bud_parentage import _assign_global
 
