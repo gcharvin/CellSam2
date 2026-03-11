@@ -35,6 +35,7 @@ class Candidate:
     dist: float
     size_ratio: float
     motion: float
+    contact: float
 
 
 def _list_sequence_dirs(root: Path) -> List[Path]:
@@ -76,6 +77,13 @@ def _stats_from_mask(mask: np.ndarray) -> Dict[int, ObjStats]:
     return stats
 
 
+def _binary_masks(mask: np.ndarray, object_ids: Iterable[int]) -> Dict[int, np.ndarray]:
+    return {
+        int(obj_id): (mask == int(obj_id))
+        for obj_id in object_ids
+    }
+
+
 def _distance(a: ObjStats, b: ObjStats) -> float:
     return math.hypot(a.cx - b.cx, a.cy - b.cy)
 
@@ -90,6 +98,25 @@ def _motion_score(prev: ObjStats | None, curr: ObjStats, radius: float, motion_s
     speed = math.hypot(curr.cx - prev.cx, curr.cy - prev.cy)
     denom = max(motion_scale * radius, 1e-6)
     return math.exp(-speed / denom)
+
+
+def _contact_score(
+    bud_mask: np.ndarray,
+    mother_mask: np.ndarray,
+    interface_radius: int,
+) -> float:
+    if interface_radius <= 0:
+        return 0.0
+    bud_area = int(bud_mask.sum())
+    if bud_area <= 0:
+        return 0.0
+    kernel_size = 2 * interface_radius + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    mother_uint8 = mother_mask.astype(np.uint8)
+    dilated = cv2.dilate(mother_uint8, kernel, iterations=1).astype(bool)
+    interface_ring = dilated & (~mother_mask)
+    contact_pixels = int((interface_ring & bud_mask).sum())
+    return min(1.0, contact_pixels / float(bud_area))
 
 
 def _load_res_track(path: Path) -> np.ndarray:
@@ -118,7 +145,9 @@ def _assign_online(
     w_dist: float,
     w_size: float,
     w_motion: float,
+    w_contact: float,
     motion_scale: float,
+    interface_radius: int,
     out_suffix: str,
     inplace: bool,
 ) -> None:
@@ -139,6 +168,7 @@ def _assign_online(
             raise RuntimeError(f"Failed to read {mask_path}")
         stats = _stats_from_mask(mask)
         ids_present = set(stats.keys())
+        masks = _binary_masks(mask, ids_present)
 
         # track first appearance
         new_ids = ids_present - seen_ids
@@ -190,8 +220,18 @@ def _assign_online(
                 dist_score = max(0.0, 1.0 - (dist / dist_max))
                 size_score = max(0.0, 1.0 - size_ratio)
                 motion_score = _motion_score(prev_centroids.get(mother_id), mother, radius, motion_scale)
-
-                score = w_dist * dist_score + w_size * size_score + w_motion * motion_score
+                contact_score = _contact_score(
+                    bud_mask=masks[bud_id],
+                    mother_mask=masks[mother_id],
+                    interface_radius=interface_radius,
+                )
+                total_weight = max(1e-6, w_dist + w_size + w_motion + w_contact)
+                score = (
+                    w_dist * dist_score
+                    + w_size * size_score
+                    + w_motion * motion_score
+                    + w_contact * contact_score
+                ) / total_weight
                 if score < min_score:
                     continue
 
@@ -204,6 +244,7 @@ def _assign_online(
                         dist=dist,
                         size_ratio=size_ratio,
                         motion=motion_score,
+                        contact=contact_score,
                     )
                 )
 
@@ -247,11 +288,12 @@ def _assign_online(
     # Write assignment summary
     summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
     with summary_path.open("w") as f:
-        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion\n")
+        f.write("bud_id,mother_id,frame,score,dist,size_ratio,motion,contact\n")
         for cand in assignments:
             f.write(
                 f"{cand.bud_id},{cand.mother_id},{cand.frame_idx},"
-                f"{cand.score:.4f},{cand.dist:.2f},{cand.size_ratio:.4f},{cand.motion:.4f}\n"
+                f"{cand.score:.4f},{cand.dist:.2f},{cand.size_ratio:.4f},"
+                f"{cand.motion:.4f},{cand.contact:.4f}\n"
             )
 
 
@@ -267,7 +309,9 @@ def main() -> None:
     parser.add_argument("--w_dist", type=float, default=0.6, help="Weight for distance score")
     parser.add_argument("--w_size", type=float, default=0.3, help="Weight for size score")
     parser.add_argument("--w_motion", type=float, default=0.1, help="Weight for motion score")
+    parser.add_argument("--w_contact", type=float, default=0.0, help="Weight for mother-bud contact score")
     parser.add_argument("--motion_scale", type=float, default=2.0, help="Scale for motion penalty")
+    parser.add_argument("--interface_radius", type=int, default=4, help="Dilation radius used to measure bud-mother contact")
     parser.add_argument("--out_suffix", type=str, default="_parented", help="Suffix for output files")
     parser.add_argument("--inplace", action="store_true", help="Overwrite res_track.txt")
     args = parser.parse_args()
@@ -285,7 +329,9 @@ def main() -> None:
             w_dist=args.w_dist,
             w_size=args.w_size,
             w_motion=args.w_motion,
+            w_contact=args.w_contact,
             motion_scale=args.motion_scale,
+            interface_radius=args.interface_radius,
             out_suffix=args.out_suffix,
             inplace=args.inplace,
         )

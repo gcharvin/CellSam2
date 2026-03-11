@@ -138,10 +138,22 @@ def parse_args():
         help="Weight for motion score",
     )
     parser.add_argument(
+        "--bud_w_contact",
+        type=float,
+        default=0.0,
+        help="Weight for bud-mother contact score",
+    )
+    parser.add_argument(
         "--bud_motion_scale",
         type=float,
         default=2.0,
         help="Scale for motion penalty",
+    )
+    parser.add_argument(
+        "--bud_interface_radius",
+        type=int,
+        default=4,
+        help="Dilation radius for measuring bud-mother contact",
     )
     parser.add_argument(
         "--bud_no_inplace",
@@ -229,7 +241,9 @@ def process_directory(
                 w_dist=args.bud_w_dist,
                 w_size=args.bud_w_size,
                 w_motion=args.bud_w_motion,
+                w_contact=args.bud_w_contact,
                 motion_scale=args.bud_motion_scale,
+                interface_radius=args.bud_interface_radius,
                 out_suffix="_parented",
                 inplace=not args.bud_no_inplace,
             )
