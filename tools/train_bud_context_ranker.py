@@ -36,12 +36,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refractory", type=int, default=8)
     parser.add_argument("--score-threshold", type=float, default=0.5)
     parser.add_argument("--blend-alpha", type=float, default=0.6)
+    parser.add_argument("--model-type", choices=["baseline", "candidate_attn"], default="baseline")
     parser.add_argument("--hidden-dim", type=int, default=96)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=120)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--val-fraction", type=float, default=0.18)
+    parser.add_argument("--val-group-by", choices=["video", "sample"], default="video")
+    parser.add_argument("--early-stop-patience", type=int, default=20)
+    parser.add_argument("--min-epochs", type=int, default=20)
+    parser.add_argument("--candidate-heads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="")
     return parser.parse_args()
@@ -54,8 +60,9 @@ def load_dataset(root: Path) -> tuple[dict[str, np.ndarray], list[dict]]:
 
 
 class ContextRanker(nn.Module):
-    def __init__(self, pair_dim: int, cand_dim: int, bud_dim: int, hidden_dim: int, dropout: float):
+    def __init__(self, pair_dim: int, cand_dim: int, bud_dim: int, hidden_dim: int, dropout: float, model_type: str = "baseline", candidate_heads: int = 4):
         super().__init__()
+        self.model_type = model_type
         self.frame_encoder = nn.Sequential(
             nn.Linear(pair_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -74,6 +81,17 @@ class ContextRanker(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
         )
+        if model_type == "candidate_attn":
+            self.candidate_attn = nn.MultiheadAttention(
+                embed_dim=hidden_dim,
+                num_heads=candidate_heads,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.attn_norm = nn.LayerNorm(hidden_dim)
+        else:
+            self.candidate_attn = None
+            self.attn_norm = None
         self.score_head = nn.Sequential(
             nn.Linear(hidden_dim * 5, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -103,6 +121,9 @@ class ContextRanker(nn.Module):
         bud_emb = self.bud_encoder(x_bud).unsqueeze(1).expand(-1, x_cand.shape[1], -1)
 
         candidate_repr = mean_frame + max_frame + cand_emb
+        if self.candidate_attn is not None:
+            attn_out, _ = self.candidate_attn(candidate_repr, candidate_repr, candidate_repr, key_padding_mask=~x_cand_valid)
+            candidate_repr = self.attn_norm(candidate_repr + attn_out)
         cand_mask = x_cand_valid.unsqueeze(-1)
         cand_count = cand_mask.sum(dim=1).clamp(min=1)
         group_mean = (candidate_repr * cand_mask).sum(dim=1, keepdim=True) / cand_count.unsqueeze(1)
@@ -126,6 +147,31 @@ def filtered_indices(targets: np.ndarray) -> np.ndarray:
     return np.nonzero(targets >= 0)[0]
 
 
+def split_train_val_indices(samples: list[dict], targets: np.ndarray, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
+    valid_indices = filtered_indices(targets)
+    if len(valid_indices) <= 4 or args.val_fraction <= 0.0:
+        return valid_indices, np.asarray([], dtype=np.int64)
+    rng = np.random.default_rng(args.seed)
+    if args.val_group_by == "video":
+        groups: dict[str, list[int]] = {}
+        for idx in valid_indices.tolist():
+            groups.setdefault(samples[idx]["video_id"], []).append(idx)
+        video_ids = sorted(groups)
+        rng.shuffle(video_ids)
+        target_videos = max(1, int(round(len(video_ids) * args.val_fraction)))
+        val_videos = set(video_ids[:target_videos])
+        train_idx = [idx for vid, idxs in groups.items() if vid not in val_videos for idx in idxs]
+        val_idx = [idx for vid, idxs in groups.items() if vid in val_videos for idx in idxs]
+        if not train_idx or not val_idx:
+            cutoff = max(1, int(round(len(valid_indices) * (1.0 - args.val_fraction))))
+            return valid_indices[:cutoff], valid_indices[cutoff:]
+        return np.asarray(train_idx, dtype=np.int64), np.asarray(val_idx, dtype=np.int64)
+    order = rng.permutation(valid_indices)
+    cutoff = max(1, int(round(len(order) * (1.0 - args.val_fraction))))
+    cutoff = min(cutoff, len(order) - 1)
+    return order[:cutoff], order[cutoff:]
+
+
 def batch_tensors(arrays: dict[str, np.ndarray], indices: np.ndarray, device: torch.device) -> tuple[torch.Tensor, ...]:
     return (
         torch.from_numpy(arrays["x_pair"][indices]).to(device),
@@ -137,7 +183,7 @@ def batch_tensors(arrays: dict[str, np.ndarray], indices: np.ndarray, device: to
     )
 
 
-def train_model(arrays: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[ContextRanker, dict]:
+def train_model(arrays: dict[str, np.ndarray], samples: list[dict], args: argparse.Namespace) -> tuple[ContextRanker, dict]:
     device_name = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device_name)
     torch.manual_seed(args.seed)
@@ -149,14 +195,21 @@ def train_model(arrays: dict[str, np.ndarray], args: argparse.Namespace) -> tupl
         bud_dim=int(arrays["x_bud_global"].shape[-1]),
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
+        model_type=args.model_type,
+        candidate_heads=args.candidate_heads,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    valid_indices = filtered_indices(arrays["targets"])
+    train_indices, val_indices = split_train_val_indices(samples, arrays["targets"], args)
     rng = np.random.default_rng(args.seed)
     losses = []
-    for _ in range(args.epochs):
-        order = rng.permutation(valid_indices)
+    val_losses = []
+    best_state = None
+    best_val_loss = float("inf")
+    best_epoch = -1
+    patience = 0
+    for epoch in range(args.epochs):
+        order = rng.permutation(train_indices)
         model.train()
         epoch_loss = 0.0
         num_batches = 0
@@ -172,14 +225,42 @@ def train_model(arrays: dict[str, np.ndarray], args: argparse.Namespace) -> tupl
             num_batches += 1
         losses.append(epoch_loss / max(num_batches, 1))
 
+        if len(val_indices) > 0:
+            model.eval()
+            with torch.no_grad():
+                x_pair, x_pair_valid, x_cand, x_cand_valid, x_bud, targets = batch_tensors(arrays, val_indices, device)
+                logits = model(x_pair, x_pair_valid.bool(), x_cand, x_cand_valid.bool(), x_bud)
+                val_loss = float(F.cross_entropy(logits, targets).item())
+            val_losses.append(val_loss)
+            if val_loss < best_val_loss - 1e-6:
+                best_val_loss = val_loss
+                best_epoch = epoch + 1
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                patience = 0
+            else:
+                patience += 1
+            if epoch + 1 >= args.min_epochs and patience >= args.early_stop_patience:
+                break
+        else:
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_epoch = epoch + 1
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
     model.eval()
     train_info = {
         "device": device.type,
-        "epochs": args.epochs,
+        "model_type": args.model_type,
+        "epochs_requested": args.epochs,
+        "epochs_trained": len(losses),
+        "best_epoch": best_epoch,
         "batch_size": args.batch_size,
-        "final_loss": losses[-1] if losses else None,
-        "min_loss": min(losses) if losses else None,
-        "num_train_samples": int(len(valid_indices)),
+        "final_train_loss": losses[-1] if losses else None,
+        "min_train_loss": min(losses) if losses else None,
+        "best_val_loss": None if best_val_loss == float("inf") else best_val_loss,
+        "num_train_samples": int(len(train_indices)),
+        "num_val_samples": int(len(val_indices)),
+        "val_group_by": args.val_group_by,
     }
     return model, train_info
 
@@ -328,9 +409,9 @@ def main() -> None:
     output_root = Path(args.output_root).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    train_arrays, _ = load_dataset(train_root)
+    train_arrays, train_samples = load_dataset(train_root)
     apply_arrays, apply_samples = load_dataset(apply_root)
-    model, train_info = train_model(train_arrays, args)
+    model, train_info = train_model(train_arrays, train_samples, args)
     train_eval = evaluate_model(model, train_arrays, args)
     apply_eval = evaluate_model(model, apply_arrays, args)
     apply_info = apply_model(model, apply_arrays, apply_samples, apply_pred_root, output_root / "predictions", args)
@@ -340,6 +421,8 @@ def main() -> None:
             "state_dict": model.state_dict(),
             "hidden_dim": args.hidden_dim,
             "dropout": args.dropout,
+            "model_type": args.model_type,
+            "candidate_heads": args.candidate_heads,
         },
         output_root / "context_ranker.pt",
     )
