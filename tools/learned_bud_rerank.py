@@ -812,6 +812,87 @@ def predict_transformer_scores(feature_rows: np.ndarray, mean: np.ndarray, std: 
     return probs
 
 
+def _api_cfg_from_args(args: argparse.Namespace):
+    from tools.parentage_api import ParentageConfig
+
+    return ParentageConfig(
+        refractory=args.refractory,
+        max_dist_factor=args.max_dist_factor,
+        bud_max_area_ratio=args.bud_max_area_ratio,
+        min_bud_area=args.min_bud_area,
+        min_mother_age=args.min_mother_age,
+        min_score=args.min_score,
+        min_track_length=args.min_track_length,
+        first_frames=args.first_frames,
+        w_dist=args.w_dist,
+        w_size=args.w_size,
+        w_motion=args.w_motion,
+        w_contact=args.w_contact,
+        w_neck=args.w_neck,
+        w_prebud=args.w_prebud,
+        w_angle=args.w_angle,
+        w_maturity=args.w_maturity,
+        w_track_quality=args.w_track_quality,
+        w_margin=args.w_margin,
+        w_lineage=args.w_lineage,
+        motion_scale=args.motion_scale,
+        interface_radius=args.interface_radius,
+        use_border_neck=args.use_border_neck,
+        preferred_mother_age=args.preferred_mother_age,
+        lineage_margin=args.lineage_margin,
+        score_threshold=args.score_threshold,
+        learned_score_alpha=args.learned_score_alpha,
+        device=args.sam2_device or getattr(args, "transformer_device", ""),
+    )
+
+
+def _write_learned_assignment_summary(
+    seq_dir: Path,
+    candidate_table,
+    scored_candidates,
+    assignment,
+    extra_by_pair: Dict[Tuple[int, int], dict],
+    score_threshold: float,
+) -> None:
+    summary_path = seq_dir / "bud_parentage_learned.csv"
+    with summary_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "bud_id", "mother_id", "frame", "score", "mother_age", "dist", "size_ratio", "motion",
+                "contact", "neck", "prebud", "angle", "maturity", "track_quality", "margin", "lineage",
+                "temporal_support", "contact_persistence", "neck_persistence", "attachment_persistence",
+                "dist_stability", "separation_trend", "framewise_best_fraction",
+                "sam2_cosine_mean", "sam2_cosine_min", "sam2_cosine_trend", "status",
+            ]
+        )
+        best_by_bud = {
+            bud_id: rows[0].candidate
+            for bud_id, rows in scored_candidates.scored_by_bud.items()
+            if rows
+        }
+        for bud_id in sorted(candidate_table.candidates_by_bud):
+            cand = assignment.assigned_by_bud.get(bud_id, best_by_bud.get(bud_id))
+            if cand is None:
+                continue
+            status = "assigned" if bud_id in assignment.assigned_by_bud and cand.score >= score_threshold else "kept_proposal"
+            extra = extra_by_pair.get((cand.bud_id, cand.mother_id), {})
+            writer.writerow(
+                [
+                    cand.bud_id, cand.mother_id, cand.frame_idx, f"{cand.score:.6f}", cand.mother_age,
+                    f"{cand.dist:.6f}", f"{cand.size_ratio:.6f}", f"{cand.motion:.6f}",
+                    f"{cand.contact:.6f}", f"{cand.neck:.6f}", f"{cand.prebud:.6f}", f"{cand.angle:.6f}",
+                    f"{cand.maturity:.6f}", f"{cand.track_quality:.6f}", f"{cand.margin:.6f}", f"{cand.lineage:.6f}",
+                    f"{extra.get('temporal_support', 0.0):.6f}", f"{extra.get('contact_persistence', 0.0):.6f}",
+                    f"{extra.get('neck_persistence', 0.0):.6f}", f"{extra.get('attachment_persistence', 0.0):.6f}",
+                    f"{extra.get('dist_stability', 0.0):.6f}", f"{extra.get('separation_trend', 0.0):.6f}",
+                    f"{extra.get('framewise_best_fraction', 0.0):.6f}",
+                    f"{extra.get('sam2_cosine_mean', 0.0):.6f}", f"{extra.get('sam2_cosine_min', 0.0):.6f}",
+                    f"{extra.get('sam2_cosine_trend', 0.0):.6f}", status,
+                ]
+            )
+
+
 def apply_transformer_model_to_root(
     pred_root: Path,
     image_root: Path | None,
@@ -822,95 +903,59 @@ def apply_transformer_model_to_root(
     embedding_extractor: SAM2EmbeddingExtractor | None,
     args: argparse.Namespace,
 ):
+    from tools.parentage_api import (
+        TransformerReranker,
+        assign_parentage,
+        build_candidates,
+        build_model_inputs,
+        score_candidates,
+        write_assignments,
+    )
+
     if output_root.exists():
         shutil.rmtree(output_root)
     shutil.copytree(pred_root, output_root)
 
     device_name = args.transformer_device or ("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(device_name)
-    model = model.to(device)
+    model = model.to(torch.device(device_name))
     model.eval()
+    cfg = _api_cfg_from_args(args)
+    scorer = TransformerReranker(
+        mean=mean,
+        std=std,
+        model=model,
+        device=device_name,
+        alpha=args.learned_score_alpha,
+        name="transformer_listwise",
+    )
 
     for video_id in sorted(path.name for path in output_root.iterdir() if path.is_dir()):
         seq_dir = output_root / video_id
         image_dir = resolve_image_dir(image_root, video_id)
-        seq_context = build_seq_context(seq_dir, args)
-        track_infos = seq_context["track_infos"]
-        candidates_by_bud = seq_context["candidates_by_bud"]
-        res_track = _load_res_track(seq_dir / "res_track.txt")
-        all_candidates: List[Candidate] = []
-        extra_by_pair: Dict[Tuple[int, int], dict] = {}
-
-        for bud_id, cand_list in candidates_by_bud.items():
-            proposal_parent = track_infos[bud_id].parent
-            feature_rows = []
-            heuristic_scores = []
-            for cand in cand_list:
-                extra = get_extra_features(cand, seq_context, image_dir, embedding_extractor, args)
-                extra_by_pair[(cand.bud_id, cand.mother_id)] = extra
-                feature_rows.append(features_from_candidate(cand, proposal_parent, extra))
-                heuristic_scores.append(float(cand.score))
-            feature_array = np.stack(feature_rows, axis=0)
-            probs = predict_transformer_scores(feature_array, mean, std, model, device)
-            for cand, prob, heuristic_score in zip(cand_list, probs.tolist(), heuristic_scores):
-                cand.score = float(
-                    np.clip(
-                        args.learned_score_alpha * prob
-                        + (1.0 - args.learned_score_alpha) * heuristic_score,
-                        0.0,
-                        1.0,
-                    )
-                )
-                all_candidates.append(cand)
-
-        assigned = _solve_global_ilp(
-            bud_ids=sorted(candidates_by_bud.keys()),
-            candidates=all_candidates,
-            track_infos=track_infos,
-            refractory_frames=args.refractory,
+        candidate_table = build_candidates(seq_dir=seq_dir, cfg=cfg, image_dir=image_dir)
+        model_inputs = build_model_inputs(
+            candidate_table=candidate_table,
+            scorer_name="transformer_listwise",
+            cfg=cfg,
+            embedding_extractor=embedding_extractor,
         )
-
-        for bud_id, cand in assigned.items():
-            if cand.score < args.score_threshold:
-                continue
-            bud_mask = res_track[:, 0] == bud_id
-            if bud_mask.any():
-                res_track[bud_mask, 3] = cand.mother_id
-        _write_res_track(seq_dir / "res_track.txt", res_track)
-
-        summary_path = seq_dir / "bud_parentage_learned.csv"
-        with summary_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "bud_id", "mother_id", "frame", "score", "mother_age", "dist", "size_ratio", "motion",
-                    "contact", "neck", "prebud", "angle", "maturity", "track_quality", "margin", "lineage",
-                    "temporal_support", "contact_persistence", "neck_persistence", "attachment_persistence",
-                    "dist_stability", "separation_trend", "framewise_best_fraction",
-                    "sam2_cosine_mean", "sam2_cosine_min", "sam2_cosine_trend", "status",
-                ]
-            )
-            best_by_bud = {}
-            for cand in sorted(all_candidates, key=lambda item: item.score, reverse=True):
-                best_by_bud.setdefault(cand.bud_id, cand)
-            for bud_id in sorted(candidates_by_bud):
-                cand = assigned.get(bud_id, best_by_bud.get(bud_id))
-                status = "assigned" if bud_id in assigned and cand.score >= args.score_threshold else "kept_proposal"
-                extra = extra_by_pair.get((cand.bud_id, cand.mother_id), {})
-                writer.writerow(
-                    [
-                        cand.bud_id, cand.mother_id, cand.frame_idx, f"{cand.score:.6f}", cand.mother_age,
-                        f"{cand.dist:.6f}", f"{cand.size_ratio:.6f}", f"{cand.motion:.6f}",
-                        f"{cand.contact:.6f}", f"{cand.neck:.6f}", f"{cand.prebud:.6f}", f"{cand.angle:.6f}",
-                        f"{cand.maturity:.6f}", f"{cand.track_quality:.6f}", f"{cand.margin:.6f}", f"{cand.lineage:.6f}",
-                        f"{extra.get('temporal_support', 0.0):.6f}", f"{extra.get('contact_persistence', 0.0):.6f}",
-                        f"{extra.get('neck_persistence', 0.0):.6f}", f"{extra.get('attachment_persistence', 0.0):.6f}",
-                        f"{extra.get('dist_stability', 0.0):.6f}", f"{extra.get('separation_trend', 0.0):.6f}",
-                        f"{extra.get('framewise_best_fraction', 0.0):.6f}",
-                        f"{extra.get('sam2_cosine_mean', 0.0):.6f}", f"{extra.get('sam2_cosine_min', 0.0):.6f}",
-                        f"{extra.get('sam2_cosine_trend', 0.0):.6f}", status,
-                    ]
-                )
+        scored_candidates = score_candidates(model_inputs=model_inputs, scorer=scorer, cfg=cfg)
+        assignment = assign_parentage(candidate_table=candidate_table, scored_candidates=scored_candidates, cfg=cfg, mode="ilp")
+        write_assignments(assignment, seq_dir / "res_track.txt")
+        extra_by_pair = model_inputs.payload_by_bud
+        flat_extra = {
+            pair: extra
+            for payload in extra_by_pair.values()
+            for pair, extra in payload.get("extra_by_pair", {}).items()
+        }
+        _write_learned_assignment_summary(
+            seq_dir=seq_dir,
+            candidate_table=candidate_table,
+            scored_candidates=scored_candidates,
+            assignment=assignment,
+            extra_by_pair=flat_extra,
+            score_threshold=args.score_threshold,
+        )
 
 
 def write_model(path: Path, mean: np.ndarray, std: np.ndarray, theta: np.ndarray, objective: str) -> None:
@@ -934,89 +979,54 @@ def apply_model_to_root(
     embedding_extractor: SAM2EmbeddingExtractor | None,
     args: argparse.Namespace,
 ):
+    from tools.parentage_api import (
+        LinearReranker,
+        assign_parentage,
+        build_candidates,
+        build_model_inputs,
+        score_candidates,
+        write_assignments,
+    )
+
     if output_root.exists():
         shutil.rmtree(output_root)
     shutil.copytree(pred_root, output_root)
 
+    cfg = _api_cfg_from_args(args)
+    scorer = LinearReranker(
+        mean=mean,
+        std=std,
+        theta=theta,
+        alpha=args.learned_score_alpha,
+        name=args.objective,
+    )
+
     for video_id in sorted(path.name for path in output_root.iterdir() if path.is_dir()):
         seq_dir = output_root / video_id
         image_dir = resolve_image_dir(image_root, video_id)
-        seq_context = build_seq_context(seq_dir, args)
-        track_infos = seq_context["track_infos"]
-        candidates_by_bud = seq_context["candidates_by_bud"]
-        res_track = _load_res_track(seq_dir / "res_track.txt")
-        all_candidates: List[Candidate] = []
-        extra_by_pair: Dict[Tuple[int, int], dict] = {}
-
-        for bud_id, cand_list in candidates_by_bud.items():
-            proposal_parent = track_infos[bud_id].parent
-            feature_rows = []
-            heuristic_scores = []
-            for cand in cand_list:
-                extra = get_extra_features(cand, seq_context, image_dir, embedding_extractor, args)
-                extra_by_pair[(cand.bud_id, cand.mother_id)] = extra
-                feature_rows.append(features_from_candidate(cand, proposal_parent, extra))
-                heuristic_scores.append(float(cand.score))
-            probs = predict_prob(np.stack(feature_rows, axis=0), mean, std, theta)
-            for cand, prob, heuristic_score in zip(cand_list, probs.tolist(), heuristic_scores):
-                cand.score = float(
-                    np.clip(
-                        args.learned_score_alpha * prob
-                        + (1.0 - args.learned_score_alpha) * heuristic_score,
-                        0.0,
-                        1.0,
-                    )
-                )
-                all_candidates.append(cand)
-
-        assigned = _solve_global_ilp(
-            bud_ids=sorted(candidates_by_bud.keys()),
-            candidates=all_candidates,
-            track_infos=track_infos,
-            refractory_frames=args.refractory,
+        candidate_table = build_candidates(seq_dir=seq_dir, cfg=cfg, image_dir=image_dir)
+        model_inputs = build_model_inputs(
+            candidate_table=candidate_table,
+            scorer_name="pairwise_sam2_blend" if embedding_extractor is not None else "pairwise",
+            cfg=cfg,
+            embedding_extractor=embedding_extractor,
         )
-
-        for bud_id, cand in assigned.items():
-            if cand.score < args.score_threshold:
-                continue
-            bud_mask = res_track[:, 0] == bud_id
-            if bud_mask.any():
-                res_track[bud_mask, 3] = cand.mother_id
-        _write_res_track(seq_dir / "res_track.txt", res_track)
-
-        summary_path = seq_dir / "bud_parentage_learned.csv"
-        with summary_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "bud_id", "mother_id", "frame", "score", "mother_age", "dist", "size_ratio", "motion",
-                    "contact", "neck", "prebud", "angle", "maturity", "track_quality", "margin", "lineage",
-                    "temporal_support", "contact_persistence", "neck_persistence", "attachment_persistence",
-                    "dist_stability", "separation_trend", "framewise_best_fraction",
-                    "sam2_cosine_mean", "sam2_cosine_min", "sam2_cosine_trend", "status",
-                ]
-            )
-            best_by_bud = {}
-            for cand in sorted(all_candidates, key=lambda item: item.score, reverse=True):
-                best_by_bud.setdefault(cand.bud_id, cand)
-            for bud_id in sorted(candidates_by_bud):
-                cand = assigned.get(bud_id, best_by_bud.get(bud_id))
-                status = "assigned" if bud_id in assigned and cand.score >= args.score_threshold else "kept_proposal"
-                extra = extra_by_pair.get((cand.bud_id, cand.mother_id), {})
-                writer.writerow(
-                    [
-                        cand.bud_id, cand.mother_id, cand.frame_idx, f"{cand.score:.6f}", cand.mother_age,
-                        f"{cand.dist:.6f}", f"{cand.size_ratio:.6f}", f"{cand.motion:.6f}",
-                        f"{cand.contact:.6f}", f"{cand.neck:.6f}", f"{cand.prebud:.6f}", f"{cand.angle:.6f}",
-                        f"{cand.maturity:.6f}", f"{cand.track_quality:.6f}", f"{cand.margin:.6f}", f"{cand.lineage:.6f}",
-                        f"{extra.get('temporal_support', 0.0):.6f}", f"{extra.get('contact_persistence', 0.0):.6f}",
-                        f"{extra.get('neck_persistence', 0.0):.6f}", f"{extra.get('attachment_persistence', 0.0):.6f}",
-                        f"{extra.get('dist_stability', 0.0):.6f}", f"{extra.get('separation_trend', 0.0):.6f}",
-                        f"{extra.get('framewise_best_fraction', 0.0):.6f}",
-                        f"{extra.get('sam2_cosine_mean', 0.0):.6f}", f"{extra.get('sam2_cosine_min', 0.0):.6f}",
-                        f"{extra.get('sam2_cosine_trend', 0.0):.6f}", status,
-                    ]
-                )
+        scored_candidates = score_candidates(model_inputs=model_inputs, scorer=scorer, cfg=cfg)
+        assignment = assign_parentage(candidate_table=candidate_table, scored_candidates=scored_candidates, cfg=cfg, mode="ilp")
+        write_assignments(assignment, seq_dir / "res_track.txt")
+        flat_extra = {
+            pair: extra
+            for payload in model_inputs.payload_by_bud.values()
+            for pair, extra in payload.get("extra_by_pair", {}).items()
+        }
+        _write_learned_assignment_summary(
+            seq_dir=seq_dir,
+            candidate_table=candidate_table,
+            scored_candidates=scored_candidates,
+            assignment=assignment,
+            extra_by_pair=flat_extra,
+            score_threshold=args.score_threshold,
+        )
 
 
 def main() -> None:

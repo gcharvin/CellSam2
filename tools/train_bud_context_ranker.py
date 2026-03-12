@@ -4,6 +4,7 @@ import csv
 import json
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -15,14 +16,6 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from tools.online_bud_parentage import (
-    Candidate,
-    _load_res_track,
-    _solve_global_ilp,
-    _write_res_track,
-)
-from tools.learned_bud_rerank import build_seq_context
 
 
 def parse_args() -> argparse.Namespace:
@@ -288,6 +281,40 @@ def softmax_scores(logits: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
     return exp / denom
 
 
+def _api_cfg_from_args(args: argparse.Namespace):
+    from tools.parentage_api import ParentageConfig
+
+    return ParentageConfig(
+        refractory=args.refractory,
+        max_dist_factor=2.5,
+        bud_max_area_ratio=0.6,
+        min_bud_area=10,
+        min_mother_age=3,
+        min_score=0.12,
+        min_track_length=2,
+        first_frames=4,
+        w_dist=0.6,
+        w_size=0.3,
+        w_motion=0.1,
+        w_contact=0.1,
+        w_neck=0.25,
+        w_prebud=0.0,
+        w_angle=0.20,
+        w_maturity=0.0,
+        w_track_quality=0.10,
+        w_margin=0.15,
+        w_lineage=0.0,
+        motion_scale=2.0,
+        interface_radius=4,
+        use_border_neck=False,
+        preferred_mother_age=24,
+        lineage_margin=0.06,
+        score_threshold=args.score_threshold,
+        learned_score_alpha=args.blend_alpha,
+        device=args.device,
+    )
+
+
 def apply_model(
     model: ContextRanker,
     arrays: dict[str, np.ndarray],
@@ -296,10 +323,19 @@ def apply_model(
     output_root: Path,
     args: argparse.Namespace,
 ) -> dict:
+    from tools.parentage_api import (
+        CandidateScore,
+        ScoredCandidates,
+        assign_parentage,
+        build_candidates,
+        write_assignments,
+    )
+
     device_name = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device_name)
     model = model.to(device)
     model.eval()
+    cfg = _api_cfg_from_args(args)
 
     if output_root.exists():
         shutil.rmtree(output_root)
@@ -322,76 +358,56 @@ def apply_model(
     written = 0
     for video_id, items in by_video.items():
         seq_dir = output_root / video_id
-        seq_context = build_seq_context(seq_dir, argparse.Namespace(
-            refractory=args.refractory,
-            max_dist_factor=2.5,
-            bud_max_area_ratio=0.6,
-            min_bud_area=10,
-            min_mother_age=3,
-            min_score=0.12,
-            min_track_length=2,
-            first_frames=4,
-            w_dist=0.6,
-            w_size=0.3,
-            w_motion=0.1,
-            w_contact=0.1,
-            w_neck=0.25,
-            w_prebud=0.0,
-            w_angle=0.20,
-            w_maturity=0.0,
-            w_track_quality=0.10,
-            w_margin=0.15,
-            w_lineage=0.0,
-            motion_scale=2.0,
-            interface_radius=4,
-            use_border_neck=False,
-            preferred_mother_age=24,
-            lineage_margin=0.06,
-        ))
-        track_infos = seq_context["track_infos"]
-        candidates_by_bud = seq_context["candidates_by_bud"]
-        res_track = _load_res_track(seq_dir / "res_track.txt")
-        all_candidates: list[Candidate] = []
+        candidate_table = build_candidates(seq_dir=seq_dir, cfg=cfg)
+        candidates_by_bud = candidate_table.candidates_by_bud
+        scored_by_bud: dict[int, list[CandidateScore]] = {}
         rows: list[list[object]] = []
 
         for sample, sample_probs in items:
             bud_id = int(sample["pred_bud_id"])
             cand_list = candidates_by_bud.get(bud_id, [])
             by_mother = {cand.mother_id: cand for cand in cand_list}
+            bud_scores: list[CandidateScore] = []
             for cand_info, prob in zip(sample["candidates"], sample_probs):
                 mother_id = int(cand_info["mother_id"])
                 cand = by_mother.get(mother_id)
                 if cand is None:
                     continue
                 heuristic_score = float(cand.score)
-                cand.score = float(np.clip(args.blend_alpha * prob + (1.0 - args.blend_alpha) * heuristic_score, 0.0, 1.0))
-                all_candidates.append(cand)
+                blended_score = float(np.clip(args.blend_alpha * prob + (1.0 - args.blend_alpha) * heuristic_score, 0.0, 1.0))
+                bud_scores.append(
+                    CandidateScore(
+                        bud_id=bud_id,
+                        mother_id=mother_id,
+                        heuristic_score=heuristic_score,
+                        model_score=float(prob),
+                        score=blended_score,
+                        candidate=replace(cand, score=blended_score),
+                    )
+                )
                 rows.append(
                     [
                         bud_id,
                         mother_id,
                         f"{prob:.6f}",
                         f"{heuristic_score:.6f}",
-                        f"{cand.score:.6f}",
+                        f"{blended_score:.6f}",
                         int(cand_info["label"]),
                         int(sample["target_index"]),
                     ]
                 )
+            if bud_scores:
+                bud_scores.sort(key=lambda item: item.score, reverse=True)
+                scored_by_bud[bud_id] = bud_scores
 
-        assigned = _solve_global_ilp(
-            bud_ids=sorted({cand.bud_id for cand in all_candidates}),
-            candidates=all_candidates,
-            track_infos=track_infos,
-            refractory_frames=args.refractory,
+        scored_candidates = ScoredCandidates(
+            scorer_name="context",
+            candidate_table=candidate_table,
+            scored_by_bud=scored_by_bud,
         )
-        for bud_id, cand in assigned.items():
-            if cand.score < args.score_threshold:
-                continue
-            mask = res_track[:, 0] == bud_id
-            if mask.any():
-                res_track[mask, 3] = cand.mother_id
-                written += 1
-        _write_res_track(seq_dir / "res_track.txt", res_track)
+        assignment = assign_parentage(candidate_table=candidate_table, scored_candidates=scored_candidates, cfg=cfg, mode="ilp")
+        write_assignments(assignment, seq_dir / "res_track.txt")
+        written += sum(1 for cand in assignment.assigned_by_bud.values() if cand.score >= args.score_threshold)
 
         with (seq_dir / "bud_parentage_context.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -442,4 +458,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
