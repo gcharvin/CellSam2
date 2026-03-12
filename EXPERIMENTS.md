@@ -111,3 +111,37 @@ For current yeast tracking work:
   - `tools/eval_division_iou_window.py`
   - `Cell-HOTA`
 
+## Train Dev / Val Holdout
+
+For non-learned post-processing and heuristics, use:
+
+- `train/CTC` as `train_dev`
+  - purpose:
+    - diagnose failure modes
+    - tune heuristic parameters
+    - reject clearly unstable ideas early
+- `val/CTC` as `val_holdout`
+  - purpose:
+    - decide whether a heuristic is kept
+    - estimate whether a gain survives outside the development split
+
+This is intentionally not framed as standard ML model selection. The point is to avoid overfitting heuristic rules to the current holdout videos `12,13,14`.
+
+Recommended workflow:
+
+```bash
+python tools/eval_dev_holdout.py \
+  --experiment /home/charvin-admin/Documents/cellSAM2/experiments/<exp_id> \
+  --dataset-root /homes/Gilles/Data/DetecDivProjects/anais/bud4/classification/celltracktr_5/trainingdataset/moma \
+  --train-pred-root /path/to/train/predictions \
+  --val-pred-root /path/to/val/predictions
+```
+
+Outputs:
+
+- `eval/train_dev/division_iou_window.json`
+- `eval/train_dev/bud_event_diagnostic.json`
+- `eval/val_holdout/division_iou_window.json`
+- `eval/val_holdout/bud_event_diagnostic.json`
+- `eval/dev_holdout_summary.json`
+- `review/dev_holdout_summary.md`

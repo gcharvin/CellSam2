@@ -91,3 +91,13 @@ If `Cell-HOTA` is involved, also write:
 - Preferred dataset root for current yeast work:
   - `/homes/Gilles/Data/DetecDivProjects/anais/bud4/classification/celltracktr_5/trainingdataset/moma`
 
+### Split Evaluation Rules
+
+- For non-learned post-processing, use:
+  - `train/CTC` as `train_dev`
+  - `val/CTC` as `val_holdout`
+- `train_dev` may be used to tune heuristic rules and thresholds.
+- `val_holdout` must remain the decision split.
+- Do not claim an improvement from `train_dev` alone.
+- Prefer the helper:
+  - `python tools/eval_dev_holdout.py ...`
