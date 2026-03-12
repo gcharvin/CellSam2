@@ -124,6 +124,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parent-map-threshold", type=float, default=0.2)
     parser.add_argument("--reg-strength", type=float, default=0.1)
     parser.add_argument("--score-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--learned-score-alpha",
+        type=float,
+        default=1.0,
+        help="Blend factor between learned probability and original heuristic candidate score",
+    )
     return parser.parse_args()
 
 
@@ -666,13 +672,22 @@ def apply_model_to_root(
         for bud_id, cand_list in candidates_by_bud.items():
             proposal_parent = track_infos[bud_id].parent
             feature_rows = []
+            heuristic_scores = []
             for cand in cand_list:
                 extra = get_extra_features(cand, seq_context, image_dir, embedding_extractor, args)
                 extra_by_pair[(cand.bud_id, cand.mother_id)] = extra
                 feature_rows.append(features_from_candidate(cand, proposal_parent, extra))
+                heuristic_scores.append(float(cand.score))
             probs = predict_prob(np.stack(feature_rows, axis=0), mean, std, theta)
-            for cand, prob in zip(cand_list, probs.tolist()):
-                cand.score = float(prob)
+            for cand, prob, heuristic_score in zip(cand_list, probs.tolist(), heuristic_scores):
+                cand.score = float(
+                    np.clip(
+                        args.learned_score_alpha * prob
+                        + (1.0 - args.learned_score_alpha) * heuristic_score,
+                        0.0,
+                        1.0,
+                    )
+                )
                 all_candidates.append(cand)
 
         assigned = _solve_global_ilp(
@@ -760,6 +775,7 @@ def main() -> None:
         "num_pairwise_examples": num_pairs,
         "feature_names": FEATURE_NAMES,
         "uses_sam2_embeddings": bool(args.sam2_model_name),
+        "learned_score_alpha": args.learned_score_alpha,
     }
     (output_root / "train_summary.json").write_text(json.dumps(train_summary, indent=2), encoding="utf-8")
     print(json.dumps(train_summary, indent=2))
