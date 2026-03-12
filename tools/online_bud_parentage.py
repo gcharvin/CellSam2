@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,11 @@ from typing import Dict, Iterable, List, Tuple
 
 import cv2
 import numpy as np
+
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 try:
     from scipy.optimize import Bounds, LinearConstraint, milp
@@ -1055,23 +1061,18 @@ def _assign_global(
     out_suffix: str,
     inplace: bool,
 ) -> None:
-    mask_files = _sorted_mask_files(seq_dir)
-    if not mask_files:
-        raise ValueError(f"No mask*.tif found in {seq_dir}")
+    from tools.parentage_api import (
+        HeuristicScorer,
+        ParentageConfig,
+        assign_parentage,
+        build_candidates,
+        build_model_inputs,
+        score_candidates,
+        write_assignments,
+    )
 
-    res_track_path = seq_dir / "res_track.txt"
-    res_track = _load_res_track(res_track_path)
-    if res_track.size == 0:
-        return
-
-    track_infos = _load_track_infos(res_track_path)
-    masks, stats_cache, bin_masks = _collect_frame_cache(mask_files)
-    bud_ids, candidates = _build_global_candidates(
-        track_infos=track_infos,
-        masks=masks,
-        stats_cache=stats_cache,
-        bin_masks=bin_masks,
-        refractory_frames=refractory_frames,
+    cfg = ParentageConfig(
+        refractory=refractory_frames,
         max_dist_factor=max_dist_factor,
         bud_max_area_ratio=bud_max_area_ratio,
         min_bud_area=min_bud_area,
@@ -1095,45 +1096,35 @@ def _assign_global(
         use_border_neck=use_border_neck,
         preferred_mother_age=preferred_mother_age,
         lineage_margin=lineage_margin,
+        score_threshold=0.0,
     )
-    assigned = _solve_global_ilp(
-        bud_ids=bud_ids,
-        candidates=candidates,
-        track_infos=track_infos,
-        refractory_frames=refractory_frames,
-    )
+    candidate_table = build_candidates(seq_dir=seq_dir, cfg=cfg)
+    if candidate_table.res_track.size == 0:
+        return
+    model_inputs = build_model_inputs(candidate_table=candidate_table, scorer_name="heuristic", cfg=cfg)
+    scored_candidates = score_candidates(model_inputs=model_inputs, scorer=HeuristicScorer(), cfg=cfg)
+    assignment = assign_parentage(candidate_table=candidate_table, scored_candidates=scored_candidates, cfg=cfg, mode="ilp")
 
-    for bud_id in bud_ids:
-        bud_mask = res_track[:, 0] == bud_id
-        if bud_mask.any():
-            res_track[bud_mask, 3] = 0
-    for bud_id, cand in assigned.items():
-        bud_mask = res_track[:, 0] == bud_id
-        if bud_mask.any():
-            res_track[bud_mask, 3] = cand.mother_id
+    out_path = seq_dir / "res_track.txt" if inplace else seq_dir / f"res_track{out_suffix}.txt"
+    write_assignments(assignment, out_path)
 
-    out_path = res_track_path if inplace else seq_dir / f"res_track{out_suffix}.txt"
-    _write_res_track(out_path, res_track)
-
-    best_by_bud = {cand.bud_id: cand for cand in assigned.values()}
-    by_bud_candidates: Dict[int, List[Candidate]] = defaultdict(list)
-    for cand in candidates:
-        by_bud_candidates[cand.bud_id].append(cand)
     summary_path = seq_dir / f"bud_parentage{out_suffix}.csv"
     with summary_path.open("w") as f:
         f.write("bud_id,mother_id,frame,score,mother_age,dist,size_ratio,motion,contact,neck,prebud,angle,maturity,track_quality,margin,lineage,status,num_candidates\n")
-        for bud_id in sorted(bud_ids):
-            if bud_id in best_by_bud:
-                cand = best_by_bud[bud_id]
+        for bud_id in sorted(candidate_table.bud_ids):
+            assigned_cand = assignment.assigned_by_bud.get(bud_id)
+            if assigned_cand is not None:
+                cand = assigned_cand
                 status = "assigned"
             else:
-                cand = max(
-                    by_bud_candidates.get(bud_id, []),
-                    key=lambda item: item.score,
-                    default=Candidate(
+                best_rows = scored_candidates.scored_by_bud.get(bud_id, [])
+                if best_rows:
+                    cand = best_rows[0].candidate
+                else:
+                    cand = Candidate(
                         bud_id=bud_id,
                         mother_id=0,
-                        frame_idx=track_infos[bud_id].start,
+                        frame_idx=candidate_table.track_infos[bud_id].start,
                         score=0.0,
                         mother_age=0,
                         dist=0.0,
@@ -1147,15 +1138,14 @@ def _assign_global(
                         track_quality=0.0,
                         margin=0.0,
                         lineage=0.0,
-                    ),
-                )
+                    )
                 status = "orphan"
             f.write(
                 f"{bud_id},{cand.mother_id},{cand.frame_idx},{cand.score:.4f},{cand.mother_age},"
                 f"{cand.dist:.2f},{cand.size_ratio:.4f},{cand.motion:.4f},"
                 f"{cand.contact:.4f},{cand.neck:.4f},{cand.prebud:.4f},{cand.angle:.4f},{cand.maturity:.4f},"
                 f"{cand.track_quality:.4f},{cand.margin:.4f},{cand.lineage:.4f},{status},"
-                f"{len(by_bud_candidates.get(bud_id, []))}\n"
+                f"{len(scored_candidates.scored_by_bud.get(bud_id, []))}\n"
             )
 
 
