@@ -504,6 +504,8 @@ Donc:
 ## Ressources Utiles
 
 Scripts:
+- API programmatique standardisee:
+  - `/home/charvin-admin/Documents/cellSAM2/CellSam2/tools/parentage_api.py`
 - generation dataset contextuel:
   - `/home/charvin-admin/Documents/cellSAM2/CellSam2/tools/build_bud_context_dataset.py`
 - ranker contextuel:
@@ -590,9 +592,9 @@ Mapping recommande sur le code actuel:
   - `tools/train_bud_context_ranker.py::apply_model`
 
 Limite actuelle de standardisation:
-- les scripts sont encore centres sur des CLIs separes
-- l'API commune est surtout conceptuelle
-- un futur refactor devrait isoler:
+- une premiere couche commune est maintenant implementee dans `tools/parentage_api.py`
+- les CLIs historiques existent toujours et ne sont pas encore rebranches sur cette API
+- un futur refactor peut maintenant migrer progressivement:
   - generation des candidates
   - extraction des inputs
   - scoring
