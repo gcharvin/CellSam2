@@ -45,6 +45,16 @@ Principe:
 - score heuristique par candidate
 - optimisation globale ILP sous contraintes temporelles
 
+Implementation:
+- fichier: `tools/online_bud_parentage.py`
+- fonctions principales:
+  - `_build_global_candidates`: construit les candidates et leurs features
+  - `_score_pair`: score heuristique frame par frame
+  - `_score_aggregate_pair`: score heuristique agrege
+  - `_solve_global_ilp`: optimisation globale sous contraintes
+  - `_assign_global`: attribution globale
+  - `_assign_hybrid`: variante hybride `proposal + optimisation`
+
 Input:
 - tracklets deja produites
 - features geometriques et temporelles simples:
@@ -97,6 +107,13 @@ Principe:
 - apprentissage d'un score pairwise `bud, mother_candidate`
 - application du score puis ILP global
 
+Implementation:
+- fichier: `tools/learned_bud_rerank.py`
+- fonctions principales:
+  - `build_training_set`: construit le dataset tabulaire pairwise
+  - `fit_pairwise_model`: entraine le reranker pairwise
+  - `apply_model_to_root`: applique le score appris a une racine de predictions
+
 Input:
 - features heuristiques
 - features spatio-temporelles agregees:
@@ -138,6 +155,15 @@ Principe:
 - meme principe que le pairwise
 - ajout de similarities d'embeddings SAM2 par objet
 
+Implementation:
+- fichier: `tools/learned_bud_rerank.py`
+- fonctions principales:
+  - `SAM2EmbeddingExtractor`: extrait les feature maps SAM2
+  - `compute_sam2_features`: calcule les similarities d'embeddings par objet
+  - `features_from_candidate`: concatene features heuristiques, temporelles et SAM2
+  - `fit_pairwise_model`
+  - `apply_model_to_root`
+
 Input:
 - tout ce du pairwise sans SAM2
 - plus embeddings SAM2 moyens sur masque d'objet:
@@ -178,6 +204,18 @@ Principe:
 - blend avec le score heuristique existant:
   - `score_final = 0.6 * score_appris + 0.4 * score_heuristique`
 - puis ILP global
+
+Implementation:
+- fichiers:
+  - `tools/learned_bud_rerank.py`
+  - `tools/online_bud_parentage.py`
+- fonctions principales:
+  - `fit_pairwise_model`
+  - `apply_model_to_root`: ecrit les scores appris par candidate
+  - `_load_parentage_scores`: recharge les scores appris
+  - `_build_global_candidates`
+  - `_solve_global_ilp`
+  - `_assign_hybrid`
 
 Input:
 - identique au pairwise + SAM2
@@ -230,6 +268,15 @@ Principe:
 - score par candidate
 - ILP global ensuite
 
+Implementation:
+- fichier: `tools/learned_bud_rerank.py`
+- fonctions principales:
+  - `build_listwise_training_samples`
+  - `ListwiseTransformerRanker`
+  - `fit_transformer_listwise_model`
+  - `predict_transformer_scores`
+  - `apply_transformer_model_to_root`
+
 Input:
 - features agregees par candidate
 - version avec ou sans embeddings SAM2
@@ -271,6 +318,18 @@ Principe:
   - features relatives entre candidates
 - petit modele appris
 - ILP global ensuite
+
+Implementation:
+- fichiers:
+  - `tools/build_bud_context_dataset.py`
+  - `tools/train_bud_context_ranker.py`
+- fonctions principales:
+  - `compute_pair_frame_features`: features framewise par candidate
+  - `build_sample`: sample contextuel `bud + candidates + frames`
+  - `write_npz`: export numerique
+  - `ContextRanker`: modele contextuel
+  - `train_model`
+  - `apply_model`
 
 Input:
 - tenseur `candidates x frames x features`
@@ -327,6 +386,14 @@ Principe:
 - early stopping
 - poids plus reguliers
 
+Implementation:
+- fichier: `tools/train_bud_context_ranker.py`
+- fonctions principales:
+  - `split_train_val_indices`: split interne strict
+  - `train_model`: boucle d'entrainement avec early stopping
+  - `evaluate_model`
+  - `apply_model`
+
 Input:
 - identique au context ranker
 
@@ -356,6 +423,13 @@ Nom court:
 Principe:
 - meme modele contextuel
 - ajout d'une self-attention legere entre candidates
+
+Implementation:
+- fichier: `tools/train_bud_context_ranker.py`
+- fonctions principales:
+  - `ContextRanker(..., model_type='candidate_attn')`
+  - `train_model`
+  - `apply_model`
 
 Input:
 - identique au context ranker
@@ -445,6 +519,86 @@ Videos de comparaison utiles:
 - meilleur contextuel:
   - `/home/charvin-admin/Documents/cellSAM2/experiments/20260312_1721_0488f12_context-ranker-v2-dev-holdout/review/video13_gt_vs_context_v2.mp4`
 
+## API Cible Pour Un Agent Futur
+
+Objectif:
+- avoir des briques interchangeables
+- changer le scorer sans rewriter la generation de candidates ni l'assignation globale
+- accepter que tous les scorers n'utilisent pas les memes inputs, mais qu'ils exposent la meme sortie
+
+Contrat minimal recommande:
+- `build_candidates(seq_root, cfg) -> candidate_table`
+  - construit la liste des buds, candidates meres et features minimales communes
+- `build_model_inputs(candidate_table, seq_context, cfg) -> model_inputs`
+  - specifique au scorer
+  - peut retourner des features tabulaires, des tenseurs framewise, des embeddings SAM2, etc.
+- `score_candidates(model_inputs, scorer, cfg) -> scored_candidates`
+  - retourne au minimum un score par arete `bud -> mother_candidate`
+  - optionnellement des diagnostics intermediaires
+- `assign_parentage(candidate_table, scored_candidates, cfg) -> assignments`
+  - applique `greedy`, `ILP` ou `hybrid`
+- `write_assignments(assignments, out_root)`
+  - ecrit `res_track.txt` et fichiers auxiliaires
+
+Ce qui doit rester stable:
+- schema commun des candidates:
+  - `bud_track_id`
+  - `mother_track_id`
+  - `start_frame`
+  - `sequence_id`
+  - `proposal_match`
+  - `heuristic_score`
+- schema commun des sorties:
+  - `score`
+  - `status`
+  - `assigned_parent`
+  - `source_model`
+
+Ce qui peut varier librement selon le modele:
+- construction des inputs:
+  - features heuristiques agregees
+  - features spatio-temporelles framewise
+  - embeddings SAM2
+  - patchs image/masques
+- apprentissage:
+  - pas d'apprentissage
+  - pairwise
+  - listwise
+  - contextuel
+
+Mapping recommande sur le code actuel:
+- `build_candidates`:
+  - `tools/online_bud_parentage.py::_build_global_candidates`
+- `assign_parentage`:
+  - `tools/online_bud_parentage.py::_assign_global`
+  - `tools/online_bud_parentage.py::_assign_hybrid`
+  - `tools/online_bud_parentage.py::_solve_global_ilp`
+- `build_model_inputs` pairwise/listwise:
+  - `tools/learned_bud_rerank.py::build_training_set`
+  - `tools/learned_bud_rerank.py::build_listwise_training_samples`
+- `build_model_inputs` contextuel:
+  - `tools/build_bud_context_dataset.py::build_sample`
+  - `tools/build_bud_context_dataset.py::compute_pair_frame_features`
+- `score_candidates` pairwise:
+  - `tools/learned_bud_rerank.py::fit_pairwise_model`
+  - `tools/learned_bud_rerank.py::apply_model_to_root`
+- `score_candidates` transformer:
+  - `tools/learned_bud_rerank.py::fit_transformer_listwise_model`
+  - `tools/learned_bud_rerank.py::apply_transformer_model_to_root`
+- `score_candidates` contextuel:
+  - `tools/train_bud_context_ranker.py::train_model`
+  - `tools/train_bud_context_ranker.py::apply_model`
+
+Limite actuelle de standardisation:
+- les scripts sont encore centres sur des CLIs separes
+- l'API commune est surtout conceptuelle
+- un futur refactor devrait isoler:
+  - generation des candidates
+  - extraction des inputs
+  - scoring
+  - optimisation globale
+  - ecriture des sorties
+
 ## Recommandation Courante
 
 Pour un agent futur:
@@ -457,4 +611,3 @@ Pour un agent futur:
 - si objectif applicatif immediat:
   - considerer que le systeme est deja bon
   - completer plutot l'evaluation ciblee `bas de cavite` et la revue expert
-
