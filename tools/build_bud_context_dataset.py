@@ -51,8 +51,6 @@ CANDIDATE_GLOBAL_FEATURE_NAMES = [
     "mother_age",
     "proposal_match",
     "lineage",
-    "mapped_parent_gt",
-    "label",
     "alive_fraction",
     "best_dist_fraction",
     "best_contact_fraction",
@@ -65,10 +63,6 @@ CANDIDATE_GLOBAL_FEATURE_NAMES = [
 ]
 
 BUD_GLOBAL_FEATURE_NAMES = [
-    "support_frames",
-    "support_total",
-    "dominance",
-    "onset_delay",
     "track_length",
     "num_candidates",
     "first_area",
@@ -283,10 +277,6 @@ def build_sample(video_id: str, gt_event: dict[str, int], event: dict, seq_conte
     first_area = int(first_stats.area) if first_stats is not None else 0
     last_area = int(last_stats.area) if last_stats is not None else 0
     bud_global = {
-        "support_frames": int(event.get("support_frames", 0)),
-        "support_total": int(event.get("support_total", 0)),
-        "dominance": float(event.get("dominance", 0.0)),
-        "onset_delay": safe_float(event.get("onset_delay")),
         "track_length": float(bud_track.end - bud_track.start + 1),
         "num_candidates": float(len(candidate_list)),
         "first_area": float(first_area),
@@ -339,8 +329,6 @@ def build_sample(video_id: str, gt_event: dict[str, int], event: dict, seq_conte
             "mother_age": float(cand.mother_age),
             "proposal_match": 1.0 if cand.mother_id == proposal_parent else 0.0,
             "lineage": float(cand.lineage),
-            "mapped_parent_gt": safe_float(mapped_parent_gt),
-            "label": float(label),
             **frame_summary,
         }
         candidates.append(
