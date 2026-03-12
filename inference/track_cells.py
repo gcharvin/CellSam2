@@ -154,6 +154,12 @@ def parse_args():
         help="Proposal score above which non-conflicting assignments are locked in hybrid post-processing",
     )
     parser.add_argument(
+        "--bud_proposal_lock_margin",
+        type=float,
+        default=0.03,
+        help="Minimum score advantage over the best alternative required to lock a proposal in hybrid post-processing",
+    )
+    parser.add_argument(
         "--bud_w_dist",
         type=float,
         default=0.6,
@@ -181,13 +187,25 @@ def parse_args():
         "--bud_w_neck",
         type=float,
         default=0.25,
-        help="Weight for bud-mother neck/interface score in global and hybrid post-processing",
+        help="Weight for bud-mother neck/interface score in bud post-processing",
+    )
+    parser.add_argument(
+        "--bud_w_prebud",
+        type=float,
+        default=0.0,
+        help="Weight for pre-bud emergence score measured on frames before birth",
     )
     parser.add_argument(
         "--bud_w_angle",
         type=float,
         default=0.20,
         help="Weight for angle consistency score in global and hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_w_maturity",
+        type=float,
+        default=0.18,
+        help="Weight for mother maturity score in global and hybrid post-processing",
     )
     parser.add_argument(
         "--bud_w_track_quality",
@@ -202,6 +220,12 @@ def parse_args():
         help="Weight for candidate margin score in global and hybrid post-processing",
     )
     parser.add_argument(
+        "--bud_w_lineage",
+        type=float,
+        default=0.10,
+        help="Weight for intra-lineage competition adjustment in global and hybrid post-processing",
+    )
+    parser.add_argument(
         "--bud_motion_scale",
         type=float,
         default=2.0,
@@ -212,6 +236,29 @@ def parse_args():
         type=int,
         default=4,
         help="Dilation radius for measuring bud-mother contact",
+    )
+    parser.add_argument(
+        "--bud_use_border_neck",
+        action="store_true",
+        help="Use border-focused interface score instead of the legacy neck score",
+    )
+    parser.add_argument(
+        "--bud_preferred_mother_age",
+        type=int,
+        default=24,
+        help="Preferred age in frames for a mother to be fully mature in global and hybrid post-processing",
+    )
+    parser.add_argument(
+        "--bud_lineage_margin",
+        type=float,
+        default=0.06,
+        help="Score margin required to override ancestor or descendant candidates within the same lineage",
+    )
+    parser.add_argument(
+        "--bud_family_unlock_margin",
+        type=float,
+        default=0.05,
+        help="If a same-family alternative is within this margin, do not lock and let the optimizer decide",
     )
     parser.add_argument(
         "--bud_no_inplace",
@@ -300,16 +347,24 @@ def process_directory(
                 first_frames=args.bud_first_frames,
                 proposal_bonus=args.bud_proposal_bonus,
                 proposal_lock_score=args.bud_proposal_lock_score,
+                proposal_lock_margin=args.bud_proposal_lock_margin,
                 w_dist=args.bud_w_dist,
                 w_size=args.bud_w_size,
                 w_motion=args.bud_w_motion,
                 w_contact=args.bud_w_contact,
                 w_neck=args.bud_w_neck,
+                w_prebud=args.bud_w_prebud,
                 w_angle=args.bud_w_angle,
+                w_maturity=args.bud_w_maturity,
                 w_track_quality=args.bud_w_track_quality,
                 w_margin=args.bud_w_margin,
+                w_lineage=args.bud_w_lineage,
                 motion_scale=args.bud_motion_scale,
                 interface_radius=args.bud_interface_radius,
+                use_border_neck=args.bud_use_border_neck,
+                preferred_mother_age=args.bud_preferred_mother_age,
+                lineage_margin=args.bud_lineage_margin,
+                family_unlock_margin=args.bud_family_unlock_margin,
                 out_suffix="_parented",
                 inplace=not args.bud_no_inplace,
             )
@@ -334,11 +389,17 @@ def process_directory(
                 w_motion=args.bud_w_motion,
                 w_contact=args.bud_w_contact,
                 w_neck=args.bud_w_neck,
+                w_prebud=args.bud_w_prebud,
                 w_angle=args.bud_w_angle,
+                w_maturity=args.bud_w_maturity,
                 w_track_quality=args.bud_w_track_quality,
                 w_margin=args.bud_w_margin,
+                w_lineage=args.bud_w_lineage,
                 motion_scale=args.bud_motion_scale,
                 interface_radius=args.bud_interface_radius,
+                use_border_neck=args.bud_use_border_neck,
+                preferred_mother_age=args.bud_preferred_mother_age,
+                lineage_margin=args.bud_lineage_margin,
                 out_suffix="_parented",
                 inplace=not args.bud_no_inplace,
             )
@@ -360,8 +421,11 @@ def process_directory(
                 w_size=args.bud_w_size,
                 w_motion=args.bud_w_motion,
                 w_contact=args.bud_w_contact,
+                w_neck=args.bud_w_neck,
+                w_prebud=args.bud_w_prebud,
                 motion_scale=args.bud_motion_scale,
                 interface_radius=args.bud_interface_radius,
+                use_border_neck=args.bud_use_border_neck,
                 out_suffix="_parented",
                 inplace=not args.bud_no_inplace,
             )
