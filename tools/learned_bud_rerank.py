@@ -12,6 +12,8 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from hydra.core.global_hydra import GlobalHydra
 from scipy.optimize import minimize
 
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam2-model-name", default="")
     parser.add_argument("--sam2-checkpoint-num", type=int, default=None)
     parser.add_argument("--sam2-device", default="")
-    parser.add_argument("--objective", choices=["classification", "pairwise"], default="pairwise")
+    parser.add_argument("--objective", choices=["classification", "pairwise", "transformer_listwise"], default="pairwise")
     parser.add_argument("--refractory", type=int, default=8)
     parser.add_argument("--max-dist-factor", type=float, default=2.5)
     parser.add_argument("--bud-max-area-ratio", type=float, default=0.6)
@@ -130,6 +132,16 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Blend factor between learned probability and original heuristic candidate score",
     )
+    parser.add_argument("--transformer-dim", type=int, default=128)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-layers", type=int, default=2)
+    parser.add_argument("--transformer-dropout", type=float, default=0.1)
+    parser.add_argument("--transformer-epochs", type=int, default=120)
+    parser.add_argument("--transformer-batch-size", type=int, default=32)
+    parser.add_argument("--transformer-lr", type=float, default=1e-3)
+    parser.add_argument("--transformer-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--transformer-seed", type=int, default=0)
+    parser.add_argument("--transformer-device", default="")
     return parser.parse_args()
 
 
@@ -634,6 +646,273 @@ def build_training_set(
     return rows, x, y
 
 
+def build_listwise_training_samples(rows: List[dict]) -> Tuple[List[dict], np.ndarray, int]:
+    groups: Dict[Tuple[str, int], List[dict]] = defaultdict(list)
+    for row in rows:
+        groups[(row["video_id"], row["pred_bud_id"])].append(row)
+
+    samples: List[dict] = []
+    feature_blocks: List[np.ndarray] = []
+    skipped_groups = 0
+    for (video_id, pred_bud_id), items in groups.items():
+        ordered = sorted(items, key=lambda item: float(item["features"][0]), reverse=True)
+        positive_indices = [idx for idx, item in enumerate(ordered) if item["label"] == 1]
+        if len(positive_indices) != 1:
+            skipped_groups += 1
+            continue
+        features = np.stack([item["features"] for item in ordered], axis=0)
+        samples.append(
+            {
+                "video_id": video_id,
+                "pred_bud_id": pred_bud_id,
+                "target_index": int(positive_indices[0]),
+                "candidate_mother_ids": [int(item["pred_mother_id"]) for item in ordered],
+                "features": features,
+            }
+        )
+        feature_blocks.append(features)
+
+    if not samples:
+        raise RuntimeError("No listwise training samples built for transformer reranker.")
+    return samples, np.concatenate(feature_blocks, axis=0), skipped_groups
+
+
+class ListwiseTransformerRanker(nn.Module):
+    def __init__(self, input_dim: int, model_dim: int, num_heads: int, num_layers: int, dropout: float):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, model_dim)
+        self.input_norm = nn.LayerNorm(model_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=model_dim,
+            nhead=num_heads,
+            dim_feedforward=model_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.score_head = nn.Sequential(
+            nn.LayerNorm(model_dim),
+            nn.Linear(model_dim, model_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(model_dim, 1),
+        )
+
+    def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.input_norm(self.input_proj(x))
+        h = self.encoder(h, src_key_padding_mask=padding_mask)
+        logits = self.score_head(h).squeeze(-1)
+        if padding_mask is not None:
+            logits = logits.masked_fill(padding_mask, -1e9)
+        return logits
+
+
+def _listwise_batch(samples: List[dict], mean: np.ndarray, std: np.ndarray, device: torch.device):
+    feat_dim = mean.shape[0]
+    max_len = max(sample["features"].shape[0] for sample in samples)
+    batch_x = np.zeros((len(samples), max_len, feat_dim), dtype=np.float32)
+    batch_mask = np.ones((len(samples), max_len), dtype=bool)
+    targets = np.zeros((len(samples),), dtype=np.int64)
+    for idx, sample in enumerate(samples):
+        feats = (sample["features"] - mean) / std
+        num_candidates = feats.shape[0]
+        batch_x[idx, :num_candidates, :] = feats.astype(np.float32)
+        batch_mask[idx, :num_candidates] = False
+        targets[idx] = int(sample["target_index"])
+    return (
+        torch.from_numpy(batch_x).to(device),
+        torch.from_numpy(batch_mask).to(device),
+        torch.from_numpy(targets).to(device),
+    )
+
+
+def fit_transformer_listwise_model(samples: List[dict], x: np.ndarray, args: argparse.Namespace):
+    mean = x.mean(axis=0)
+    std = x.std(axis=0)
+    std[std < 1e-6] = 1.0
+
+    device_name = args.transformer_device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(device_name)
+    torch.manual_seed(args.transformer_seed)
+    np.random.seed(args.transformer_seed)
+
+    model = ListwiseTransformerRanker(
+        input_dim=x.shape[1],
+        model_dim=args.transformer_dim,
+        num_heads=args.transformer_heads,
+        num_layers=args.transformer_layers,
+        dropout=args.transformer_dropout,
+    ).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.transformer_lr,
+        weight_decay=args.transformer_weight_decay,
+    )
+
+    rng = np.random.default_rng(args.transformer_seed)
+    losses: List[float] = []
+    for _epoch in range(args.transformer_epochs):
+        order = rng.permutation(len(samples))
+        model.train()
+        epoch_loss = 0.0
+        num_batches = 0
+        for start in range(0, len(order), args.transformer_batch_size):
+            batch_indices = order[start : start + args.transformer_batch_size]
+            batch_samples = [samples[int(i)] for i in batch_indices]
+            batch_x, batch_mask, targets = _listwise_batch(batch_samples, mean, std, device)
+            logits = model(batch_x, batch_mask)
+            loss = F.cross_entropy(logits, targets)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += float(loss.item())
+            num_batches += 1
+        losses.append(epoch_loss / max(num_batches, 1))
+
+    model.eval()
+    train_info = {
+        "device": device.type,
+        "epochs": args.transformer_epochs,
+        "batch_size": args.transformer_batch_size,
+        "final_loss": losses[-1] if losses else None,
+        "min_loss": min(losses) if losses else None,
+        "num_samples": len(samples),
+        "avg_candidates": float(np.mean([sample["features"].shape[0] for sample in samples])),
+    }
+    return mean, std, model, train_info
+
+
+def write_transformer_model(path: Path, mean: np.ndarray, std: np.ndarray, model: nn.Module, args: argparse.Namespace) -> None:
+    payload = {
+        "objective": args.objective,
+        "feature_names": FEATURE_NAMES,
+        "mean": mean.astype(np.float32),
+        "std": std.astype(np.float32),
+        "model_config": {
+            "input_dim": int(mean.shape[0]),
+            "model_dim": args.transformer_dim,
+            "num_heads": args.transformer_heads,
+            "num_layers": args.transformer_layers,
+            "dropout": args.transformer_dropout,
+        },
+        "state_dict": model.state_dict(),
+    }
+    torch.save(payload, path)
+
+
+def predict_transformer_scores(feature_rows: np.ndarray, mean: np.ndarray, std: np.ndarray, model: nn.Module, device: torch.device) -> np.ndarray:
+    x = ((feature_rows - mean) / std).astype(np.float32, copy=False)
+    batch_x = torch.from_numpy(x[None, ...]).to(device)
+    batch_mask = torch.zeros((1, x.shape[0]), dtype=torch.bool, device=device)
+    with torch.no_grad():
+        logits = model(batch_x, batch_mask)[0, : x.shape[0]]
+        probs = torch.sigmoid(logits).detach().cpu().numpy()
+    return probs
+
+
+def apply_transformer_model_to_root(
+    pred_root: Path,
+    image_root: Path | None,
+    output_root: Path,
+    mean: np.ndarray,
+    std: np.ndarray,
+    model: nn.Module,
+    embedding_extractor: SAM2EmbeddingExtractor | None,
+    args: argparse.Namespace,
+):
+    if output_root.exists():
+        shutil.rmtree(output_root)
+    shutil.copytree(pred_root, output_root)
+
+    device_name = args.transformer_device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(device_name)
+    model = model.to(device)
+    model.eval()
+
+    for video_id in sorted(path.name for path in output_root.iterdir() if path.is_dir()):
+        seq_dir = output_root / video_id
+        image_dir = resolve_image_dir(image_root, video_id)
+        seq_context = build_seq_context(seq_dir, args)
+        track_infos = seq_context["track_infos"]
+        candidates_by_bud = seq_context["candidates_by_bud"]
+        res_track = _load_res_track(seq_dir / "res_track.txt")
+        all_candidates: List[Candidate] = []
+        extra_by_pair: Dict[Tuple[int, int], dict] = {}
+
+        for bud_id, cand_list in candidates_by_bud.items():
+            proposal_parent = track_infos[bud_id].parent
+            feature_rows = []
+            heuristic_scores = []
+            for cand in cand_list:
+                extra = get_extra_features(cand, seq_context, image_dir, embedding_extractor, args)
+                extra_by_pair[(cand.bud_id, cand.mother_id)] = extra
+                feature_rows.append(features_from_candidate(cand, proposal_parent, extra))
+                heuristic_scores.append(float(cand.score))
+            feature_array = np.stack(feature_rows, axis=0)
+            probs = predict_transformer_scores(feature_array, mean, std, model, device)
+            for cand, prob, heuristic_score in zip(cand_list, probs.tolist(), heuristic_scores):
+                cand.score = float(
+                    np.clip(
+                        args.learned_score_alpha * prob
+                        + (1.0 - args.learned_score_alpha) * heuristic_score,
+                        0.0,
+                        1.0,
+                    )
+                )
+                all_candidates.append(cand)
+
+        assigned = _solve_global_ilp(
+            bud_ids=sorted(candidates_by_bud.keys()),
+            candidates=all_candidates,
+            track_infos=track_infos,
+            refractory_frames=args.refractory,
+        )
+
+        for bud_id, cand in assigned.items():
+            if cand.score < args.score_threshold:
+                continue
+            bud_mask = res_track[:, 0] == bud_id
+            if bud_mask.any():
+                res_track[bud_mask, 3] = cand.mother_id
+        _write_res_track(seq_dir / "res_track.txt", res_track)
+
+        summary_path = seq_dir / "bud_parentage_learned.csv"
+        with summary_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "bud_id", "mother_id", "frame", "score", "mother_age", "dist", "size_ratio", "motion",
+                    "contact", "neck", "prebud", "angle", "maturity", "track_quality", "margin", "lineage",
+                    "temporal_support", "contact_persistence", "neck_persistence", "attachment_persistence",
+                    "dist_stability", "separation_trend", "framewise_best_fraction",
+                    "sam2_cosine_mean", "sam2_cosine_min", "sam2_cosine_trend", "status",
+                ]
+            )
+            best_by_bud = {}
+            for cand in sorted(all_candidates, key=lambda item: item.score, reverse=True):
+                best_by_bud.setdefault(cand.bud_id, cand)
+            for bud_id in sorted(candidates_by_bud):
+                cand = assigned.get(bud_id, best_by_bud.get(bud_id))
+                status = "assigned" if bud_id in assigned and cand.score >= args.score_threshold else "kept_proposal"
+                extra = extra_by_pair.get((cand.bud_id, cand.mother_id), {})
+                writer.writerow(
+                    [
+                        cand.bud_id, cand.mother_id, cand.frame_idx, f"{cand.score:.6f}", cand.mother_age,
+                        f"{cand.dist:.6f}", f"{cand.size_ratio:.6f}", f"{cand.motion:.6f}",
+                        f"{cand.contact:.6f}", f"{cand.neck:.6f}", f"{cand.prebud:.6f}", f"{cand.angle:.6f}",
+                        f"{cand.maturity:.6f}", f"{cand.track_quality:.6f}", f"{cand.margin:.6f}", f"{cand.lineage:.6f}",
+                        f"{extra.get('temporal_support', 0.0):.6f}", f"{extra.get('contact_persistence', 0.0):.6f}",
+                        f"{extra.get('neck_persistence', 0.0):.6f}", f"{extra.get('attachment_persistence', 0.0):.6f}",
+                        f"{extra.get('dist_stability', 0.0):.6f}", f"{extra.get('separation_trend', 0.0):.6f}",
+                        f"{extra.get('framewise_best_fraction', 0.0):.6f}",
+                        f"{extra.get('sam2_cosine_mean', 0.0):.6f}", f"{extra.get('sam2_cosine_min', 0.0):.6f}",
+                        f"{extra.get('sam2_cosine_trend', 0.0):.6f}", status,
+                    ]
+                )
+
+
 def write_model(path: Path, mean: np.ndarray, std: np.ndarray, theta: np.ndarray, objective: str) -> None:
     payload = {
         "objective": objective,
@@ -759,13 +1038,38 @@ def main() -> None:
         )
 
     rows, x, y = build_training_set(train_gt_root, train_pred_root, train_image_root, embedding_extractor, args)
+    num_pairs = 0
+    num_listwise_samples = 0
+    skipped_listwise_groups = 0
+    transformer_train_info = None
     if args.objective == "pairwise":
         mean, std, theta, num_pairs = fit_pairwise_model(rows, x, reg_strength=args.reg_strength)
+        write_model(output_root / "learned_parentage_model.json", mean, std, theta, args.objective)
+        apply_model_to_root(apply_pred_root, apply_image_root, output_root / "predictions", mean, std, theta, embedding_extractor, args)
+    elif args.objective == "transformer_listwise":
+        listwise_samples, listwise_x, skipped_listwise_groups = build_listwise_training_samples(rows)
+        num_listwise_samples = len(listwise_samples)
+        mean, std, model, transformer_train_info = fit_transformer_listwise_model(listwise_samples, listwise_x, args)
+        write_transformer_model(output_root / "learned_parentage_model.pt", mean, std, model, args)
+        meta = {
+            "objective": args.objective,
+            "feature_names": FEATURE_NAMES,
+            "mean": mean.tolist(),
+            "std": std.tolist(),
+            "model_config": {
+                "input_dim": int(mean.shape[0]),
+                "model_dim": args.transformer_dim,
+                "num_heads": args.transformer_heads,
+                "num_layers": args.transformer_layers,
+                "dropout": args.transformer_dropout,
+            },
+        }
+        (output_root / "learned_parentage_model.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        apply_transformer_model_to_root(apply_pred_root, apply_image_root, output_root / "predictions", mean, std, model, embedding_extractor, args)
     else:
         mean, std, theta = fit_classification_model(x, y, reg_strength=args.reg_strength)
-        num_pairs = 0
-    write_model(output_root / "learned_parentage_model.json", mean, std, theta, args.objective)
-    apply_model_to_root(apply_pred_root, apply_image_root, output_root / "predictions", mean, std, theta, embedding_extractor, args)
+        write_model(output_root / "learned_parentage_model.json", mean, std, theta, args.objective)
+        apply_model_to_root(apply_pred_root, apply_image_root, output_root / "predictions", mean, std, theta, embedding_extractor, args)
 
     train_summary = {
         "objective": args.objective,
@@ -773,10 +1077,14 @@ def main() -> None:
         "num_positive": int(y.sum()),
         "num_negative": int((1 - y).sum()),
         "num_pairwise_examples": num_pairs,
+        "num_listwise_samples": num_listwise_samples,
+        "skipped_listwise_groups": skipped_listwise_groups,
         "feature_names": FEATURE_NAMES,
         "uses_sam2_embeddings": bool(args.sam2_model_name),
         "learned_score_alpha": args.learned_score_alpha,
     }
+    if transformer_train_info is not None:
+        train_summary["transformer"] = transformer_train_info
     (output_root / "train_summary.json").write_text(json.dumps(train_summary, indent=2), encoding="utf-8")
     print(json.dumps(train_summary, indent=2))
 
