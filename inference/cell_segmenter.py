@@ -71,7 +71,11 @@ class SAM2AutomaticCellSegmenter:
           multimask_output (bool): Whether to output multimask at each point of the grid.
 
         """
-        assert output_mode in ["binary_mask","uncompressed_rle","coco_rle",], f"Unknown output_mode {output_mode}."
+        assert output_mode in [
+            "binary_mask",
+            "uncompressed_rle",
+            "coco_rle",
+        ], f"Unknown output_mode {output_mode}."
         if output_mode == "coco_rle":
             try:
                 from pycocotools import mask as mask_utils  # type: ignore  # noqa: F401
@@ -111,7 +115,9 @@ class SAM2AutomaticCellSegmenter:
 
         # Encode masks
         if self.output_mode == "coco_rle":
-            mask_data["segmentations"] = [coco_encode_rle(rle) for rle in mask_data["rles"]]
+            mask_data["segmentations"] = [
+                coco_encode_rle(rle) for rle in mask_data["rles"]
+            ]
         elif self.output_mode == "binary_mask":
             mask_data["segmentations"] = [rle_to_mask(rle) for rle in mask_data["rles"]]
         else:
@@ -149,8 +155,13 @@ class SAM2AutomaticCellSegmenter:
         # Generate masks for this crop in batches
         data = MaskData()
 
-        for batched_points, batched_labels in batch_iterator(self.points_per_batch, input_points, input_labels):
-            batched_data = self._process_batch(points=batched_points,labels=batched_labels,)
+        for batched_points, batched_labels in batch_iterator(
+            self.points_per_batch, input_points, input_labels
+        ):
+            batched_data = self._process_batch(
+                points=batched_points,
+                labels=batched_labels,
+            )
 
             data.cat(batched_data)
             del batched_data
@@ -170,7 +181,12 @@ class SAM2AutomaticCellSegmenter:
 
         return data
 
-    def _process_batch(self,points: np.ndarray,labels: np.ndarray,normalize=False,) -> MaskData:
+    def _process_batch(
+        self,
+        points: np.ndarray,
+        labels: np.ndarray,
+        normalize=False,
+    ) -> MaskData:
         masks, iou_preds, low_res_masks, obj_scores = self.predictor._predict(
             points,
             labels,
@@ -195,7 +211,9 @@ class SAM2AutomaticCellSegmenter:
                 data.filter(keep_mask)
 
             # Calculate and filter by stability score
-            data["stability_score"] = calculate_stability_score(data["masks"], self.mask_threshold, self.stability_score_offset)
+            data["stability_score"] = calculate_stability_score(
+                data["masks"], self.mask_threshold, self.stability_score_offset
+            )
             if self.stability_score_thresh > 0.0:
                 keep_mask = data["stability_score"] >= self.stability_score_thresh
                 data.filter(keep_mask)
@@ -203,8 +221,12 @@ class SAM2AutomaticCellSegmenter:
             # One step refinement using previous mask predictions
             in_points = data["points"]
 
-            labels = torch.ones(in_points.shape[0], dtype=torch.int, device=in_points.device)
-            masks, ious, obj_scores = self.refine_with_m2m(in_points, labels, data["low_res_masks"], self.points_per_batch)
+            labels = torch.ones(
+                in_points.shape[0], dtype=torch.int, device=in_points.device
+            )
+            masks, ious, obj_scores = self.refine_with_m2m(
+                in_points, labels, data["low_res_masks"], self.points_per_batch
+            )
             data["masks"] = masks.squeeze(1)
             data["iou_preds"] = ious.squeeze(1)
             data["obj_scores"] = obj_scores.squeeze(1)
@@ -213,7 +235,9 @@ class SAM2AutomaticCellSegmenter:
                 keep_mask = data["iou_preds"] > self.pred_iou_thresh
                 data.filter(keep_mask)
 
-            data["stability_score"] = calculate_stability_score(data["masks"], self.mask_threshold, self.stability_score_offset)
+            data["stability_score"] = calculate_stability_score(
+                data["masks"], self.mask_threshold, self.stability_score_offset
+            )
             if self.stability_score_thresh > 0.0:
                 keep_mask = data["stability_score"] >= self.stability_score_thresh
                 data.filter(keep_mask)
@@ -233,7 +257,9 @@ class SAM2AutomaticCellSegmenter:
         new_iou_preds = []
         new_obj_scores = []
 
-        for cur_points, cur_point_labels, low_res_mask in batch_iterator(points_per_batch, points, point_labels, low_res_masks):
+        for cur_points, cur_point_labels, low_res_mask in batch_iterator(
+            points_per_batch, points, point_labels, low_res_masks
+        ):
             best_masks, best_iou_preds, _, obj_scores = self.predictor._predict(
                 cur_points,
                 cur_point_labels[:, None],
@@ -288,6 +314,8 @@ class SAM2AutomaticCellSegmenter:
         points = points.unsqueeze(1)  # [N, 1, 2]
 
         # Create corresponding labels tensor
-        labels = torch.ones(len(points), 1, device=self.device, dtype=torch.int)  # [N, 1]
+        labels = torch.ones(
+            len(points), 1, device=self.device, dtype=torch.int
+        )  # [N, 1]
 
         return points, labels

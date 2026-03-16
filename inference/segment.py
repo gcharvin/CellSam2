@@ -32,7 +32,9 @@ device = get_device()
 
 
 def main(config_name):
-    sam2_model = build_sam2(config_name, sam2_checkpoint, device=device, apply_postprocessing=False)
+    sam2_model = build_sam2(
+        config_name, sam2_checkpoint, device=device, apply_postprocessing=False
+    )
     predictor = SAM2AutomaticCellSegmenter(sam2_model)
 
     image_path = None
@@ -54,7 +56,10 @@ def get_image_path():
     # Open file dialog for image selection
     image_path = filedialog.askopenfilename(
         title="Select an image file",
-        filetypes=[("Image files", "*.jpg *.jpeg *.png *.tif *.tiff"), ("All files", "*.*")],
+        filetypes=[
+            ("Image files", "*.jpg *.jpeg *.png *.tif *.tiff"),
+            ("All files", "*.*"),
+        ],
     )
 
     if not image_path:
