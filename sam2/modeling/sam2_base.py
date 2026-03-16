@@ -131,12 +131,16 @@ class SAM2Base(torch.nn.Module):
         # Part 3: memory encoder for the previous frame's outputs
         self.memory_encoder = memory_encoder
         self.mem_dim = self.hidden_dim
-        if hasattr(self.memory_encoder, "out_proj") and hasattr(self.memory_encoder.out_proj, "weight"):
+        if hasattr(self.memory_encoder, "out_proj") and hasattr(
+            self.memory_encoder.out_proj, "weight"
+        ):
             # if there is compression of memories along channel dim
             self.mem_dim = self.memory_encoder.out_proj.weight.shape[0]
         self.num_maskmem = num_maskmem  # Number of memories accessible
         # Temporal encoding of the memories
-        self.maskmem_tpos_enc = torch.nn.Parameter(torch.zeros(num_maskmem, 1, 1, self.mem_dim))
+        self.maskmem_tpos_enc = torch.nn.Parameter(
+            torch.zeros(num_maskmem, 1, 1, self.mem_dim)
+        )
         trunc_normal_(self.maskmem_tpos_enc, std=0.02)
         # a single token to indicate no memory embedding from previous frames
         self.no_mem_embed = torch.nn.Parameter(torch.zeros(1, 1, self.hidden_dim))
@@ -194,7 +198,9 @@ class SAM2Base(torch.nn.Module):
         # Model compilation
         if compile_image_encoder:
             # Compile the forward function (not the full module) to allow loading checkpoints.
-            print("Image encoder compilation is enabled. First forward pass will be slow.")
+            print(
+                "Image encoder compilation is enabled. First forward pass will be slow."
+            )
             self.image_encoder.forward = torch.compile(
                 self.image_encoder.forward,
                 mode="max-autotune",
@@ -221,13 +227,21 @@ class SAM2Base(torch.nn.Module):
         # (their hyperparameters like `mask_in_chans=16` are from SAM code)
         self.sam_prompt_encoder = PromptEncoder(
             embed_dim=self.sam_prompt_embed_dim,
-            image_embedding_size=(self.sam_image_embedding_size,self.sam_image_embedding_size,),
+            image_embedding_size=(
+                self.sam_image_embedding_size,
+                self.sam_image_embedding_size,
+            ),
             input_image_size=(self.image_size, self.image_size),
             mask_in_chans=16,
         )
         self.sam_mask_decoder = MaskDecoder(
             num_multimask_outputs=3,
-            transformer=TwoWayTransformer(depth=2,embedding_dim=self.sam_prompt_embed_dim,mlp_dim=2048,num_heads=8,),
+            transformer=TwoWayTransformer(
+                depth=2,
+                embedding_dim=self.sam_prompt_embed_dim,
+                mlp_dim=2048,
+                num_heads=8,
+            ),
             transformer_dim=self.sam_prompt_embed_dim,
             iou_head_depth=3,
             iou_head_hidden_dim=256,
@@ -273,8 +287,15 @@ class SAM2Base(torch.nn.Module):
             torch.nn.Conv2d(self.hidden_dim, self.hidden_dim // 8, kernel_size=1)
         ])
 
-    def _forward_sam_heads(self,backbone_features, point_inputs=None, mask_inputs=None, high_res_features=None,
-        is_dividing=None, gt_masks=None,):
+    def _forward_sam_heads(
+        self,
+        backbone_features,
+        point_inputs=None,
+        mask_inputs=None,
+        high_res_features=None,
+        is_dividing=None,
+        gt_masks=None,
+    ):
         """
         Forward SAM prompt encoders and mask heads.
 
@@ -347,7 +368,14 @@ class SAM2Base(torch.nn.Module):
         )
         
         # Generate masks through the decoder
-        (low_res_masks, ious, sam_output_tokens,object_score_logits_dict,div_score_logits,is_dividing,) = self.sam_mask_decoder(
+        (
+            low_res_masks,
+            ious,
+            sam_output_tokens,
+            object_score_logits_dict,
+            div_score_logits,
+            is_dividing,
+        ) = self.sam_mask_decoder(
             image_embeddings=backbone_features,
             image_pe=self.sam_prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
@@ -402,7 +430,15 @@ class SAM2Base(torch.nn.Module):
             # Mix in no-object pointer based on object appearance factor
             obj_ptr[:num_non_dividing_cells] = obj_ptr[:num_non_dividing_cells] + (1 - lambda_is_obj_appearing) * self.no_obj_ptr
 
-        return (ious,low_res_masks,high_res_masks,obj_ptr,object_score_logits_dict,div_score_logits,is_dividing,)
+        return (
+            ious,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            object_score_logits_dict,
+            div_score_logits,
+            is_dividing,
+        )
 
     def _use_mask_as_output(self, backbone_features, high_res_features, mask_inputs):
         """
@@ -424,7 +460,9 @@ class SAM2Base(torch.nn.Module):
         ious = mask_inputs.new_ones(mask_inputs.size(0), 1).float()
         if not self.use_obj_ptrs_in_encoder:
             # all zeros as a dummy object pointer (of shape [B, C])
-            obj_ptr = torch.zeros(mask_inputs.size(0), self.hidden_dim, device=mask_inputs.device)
+            obj_ptr = torch.zeros(
+                mask_inputs.size(0), self.hidden_dim, device=mask_inputs.device
+            )
         else:
             # produce an object pointer using the SAM decoder from the mask input
             _, _, _, _, _, obj_ptr, _ = self._forward_sam_heads(
@@ -444,7 +482,15 @@ class SAM2Base(torch.nn.Module):
                 obj_ptr = lambda_is_obj_appearing * obj_ptr
             obj_ptr = obj_ptr + (1 - lambda_is_obj_appearing) * self.no_obj_ptr
 
-        return (low_res_masks, high_res_masks, ious, low_res_masks, high_res_masks, obj_ptr, object_score_logits,)
+        return (
+            low_res_masks,
+            high_res_masks,
+            ious,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            object_score_logits,
+        )
 
     def forward_image(self, img_batch: torch.Tensor):
         """Get the image feature on the input batch."""
@@ -452,8 +498,12 @@ class SAM2Base(torch.nn.Module):
         if self.use_high_res_features_in_sam:
             # precompute projected level 0 and level 1 features in SAM decoder
             # to avoid running it again on every SAM click
-            backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(backbone_out["backbone_fpn"][0])
-            backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(backbone_out["backbone_fpn"][1])
+            backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(
+                backbone_out["backbone_fpn"][0]
+            )
+            backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
+                backbone_out["backbone_fpn"][1]
+            )
         return backbone_out
 
     def _prepare_backbone_features(self, backbone_out):
@@ -525,7 +575,8 @@ class SAM2Base(torch.nn.Module):
         else:
             # Process memory for non-initial frames
             memory, memory_pos_embed, num_obj_ptr_tokens = self._prepare_memory_for_attention(
-                B, C, H, W, device, tracking_object_ids, memory_dict, num_frames)
+                B, C, H, W, device, tracking_object_ids, memory_dict, num_frames
+            )
 
         # Apply memory attention to fuse features
         pix_feat_with_mem = self.memory_attention(
@@ -554,7 +605,9 @@ class SAM2Base(torch.nn.Module):
         # Initialize object pointer tensors if needed
         if self.use_obj_ptrs_in_encoder:
             if self.mem_dim < C:
-                obj_ptrs_mem = torch.zeros(self.num_maskmem, B, C // self.mem_dim, self.mem_dim, device=device)
+                obj_ptrs_mem = torch.zeros(
+                    self.num_maskmem, B, C // self.mem_dim, self.mem_dim, device=device
+                )
             else:
                 raise NotImplementedError("Memory dimension is not supported for obj ptrs")
         
@@ -575,7 +628,8 @@ class SAM2Base(torch.nn.Module):
             # Fill remaining memory slots with no-object embedding
             if self.no_obj_embed_spatial is not None:
                 memory[num_mem_frames:, idx] = self.no_obj_embed_spatial[0, :, None, None].expand(
-                    self.num_maskmem - num_mem_frames, self.mem_dim, H, W)
+                    self.num_maskmem - num_mem_frames, self.mem_dim, H, W
+                )
             
             # Process object pointers if enabled
             if self.use_obj_ptrs_in_encoder:
@@ -586,8 +640,9 @@ class SAM2Base(torch.nn.Module):
                     obj_ptrs_mem[:num_mem_frames, idx] = obj_ptrs
                 
                 # Fill remaining slots with no-object pointer
-                obj_ptrs_mem[num_mem_frames:, idx] = (self.no_obj_ptr[None].reshape(1, C // self.mem_dim, self.mem_dim)
-                                                      .expand(self.num_maskmem - num_mem_frames, C // self.mem_dim, self.mem_dim))
+                obj_ptrs_mem[num_mem_frames:, idx] = self.no_obj_ptr[None].reshape(
+                    1, C // self.mem_dim, self.mem_dim
+                ).expand(self.num_maskmem - num_mem_frames, C // self.mem_dim, self.mem_dim)
         
         # Trim to actual number of memory frames
         memory = memory[:N]
@@ -633,7 +688,14 @@ class SAM2Base(torch.nn.Module):
         
         return memory, memory_pos_embed, num_obj_ptr_tokens
 
-    def _encode_new_memory(self,current_vision_feats,feat_sizes,pred_masks_high_res,object_score_logits,is_mask_from_pts,):
+    def _encode_new_memory(
+        self,
+        current_vision_feats,
+        feat_sizes,
+        pred_masks_high_res,
+        object_score_logits,
+        is_mask_from_pts,
+    ):
         """Encode the current image and its prediction into a memory feature."""
         B = current_vision_feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
@@ -644,7 +706,9 @@ class SAM2Base(torch.nn.Module):
             # optionally, apply non-overlapping constraints to the masks (it's applied
             # in the batch dimension and should only be used during eval, where all
             # the objects come from the same video under batch size 1).
-            pred_masks_high_res = self._apply_non_overlapping_constraints(pred_masks_high_res)
+            pred_masks_high_res = self._apply_non_overlapping_constraints(
+                pred_masks_high_res
+            )
         # scale the raw mask logits with a temperature before applying sigmoid
         binarize = self.binarize_mask_from_pts_for_mem_enc and is_mask_from_pts
         if binarize and not self.training:
@@ -657,14 +721,20 @@ class SAM2Base(torch.nn.Module):
             mask_for_mem = mask_for_mem * self.sigmoid_scale_for_mem_enc
         if self.sigmoid_bias_for_mem_enc != 0.0:
             mask_for_mem = mask_for_mem + self.sigmoid_bias_for_mem_enc
-        maskmem_out = self.memory_encoder(pix_feat, mask_for_mem, skip_mask_sigmoid=True)  # sigmoid already applied
+        maskmem_out = self.memory_encoder(
+            pix_feat, mask_for_mem, skip_mask_sigmoid=True  # sigmoid already applied
+        )
         maskmem_features = maskmem_out["vision_features"]
         maskmem_pos_enc = maskmem_out["vision_pos_enc"]
         # add a no-object embedding to the spatial memory to indicate that the frame
         # is predicted to be occluded (i.e. no object is appearing in the frame)
         if self.no_obj_embed_spatial is not None:
             is_obj_appearing = (object_score_logits > 0).float()
-            maskmem_features += (1 - is_obj_appearing[..., None, None]) * self.no_obj_embed_spatial[..., None, None].expand(*maskmem_features.shape)
+            maskmem_features += (
+                1 - is_obj_appearing[..., None, None]
+            ) * self.no_obj_embed_spatial[..., None, None].expand(
+                *maskmem_features.shape
+            )
 
         return maskmem_features, maskmem_pos_enc
 
@@ -692,13 +762,14 @@ class SAM2Base(torch.nn.Module):
             ]
         else:
             high_res_features = None
-
         if mask_inputs is not None and self.use_mask_input_as_output_without_sam:
             # When use_mask_input_as_output_without_sam=True, we directly output the mask input
             # (see it as a GT mask) without using a SAM prompt encoder + mask decoder.
             pix_feat = current_vision_feats[-1].permute(1, 2, 0)
             pix_feat = pix_feat.view(-1, self.hidden_dim, *feat_sizes[-1])
-            sam_outputs = self._use_mask_as_output(pix_feat, high_res_features, mask_inputs)
+            sam_outputs = self._use_mask_as_output(
+                pix_feat, high_res_features, mask_inputs
+            )
         else:
             # fused the visual feature with previous memory features in the memory bank
             pix_feat = self._prepare_memory_conditioned_features(
@@ -729,7 +800,14 @@ class SAM2Base(torch.nn.Module):
 
         return current_out, sam_outputs, high_res_features, pix_feat
 
-    def _encode_memory_in_output(self,current_vision_feats,feat_sizes,point_inputs,run_mem_encoder,current_out,):
+    def _encode_memory_in_output(
+        self,
+        current_vision_feats,
+        feat_sizes,
+        point_inputs,
+        run_mem_encoder,
+        current_out,
+    ):
         """
         Encode the current frame's prediction into a memory feature.
         
@@ -769,16 +847,27 @@ class SAM2Base(torch.nn.Module):
         
         return maskmem_features, maskmem_pos_enc
 
-    def track_step(self,frame_idx,is_init_cond_frame,current_vision_feats,current_vision_pos_embeds,feat_sizes,
-        point_inputs,mask_inputs,output_dict,num_frames,track_in_reverse=False,run_mem_encoder=True,prev_sam_mask_logits=None,):
-        # tracking in reverse time order (for demo usage)
+    def track_step(
+        self,
+        frame_idx,
+        is_init_cond_frame,
+        current_vision_feats,
+        current_vision_pos_embeds,
+        feat_sizes,
+        point_inputs,
+        mask_inputs,
+        output_dict,
+        num_frames,
+        track_in_reverse=False,  # tracking in reverse time order (for demo usage)
         # Whether to run the memory encoder on the predicted masks. Sometimes we might want
         # to skip the memory encoder with `run_mem_encoder=False`. For example,
         # in demo we might call `track_step` multiple times for each user click,
         # and only encode the memory when the user finalizes their clicks. And in ablation
         # settings like SAM training on static images, we don't need the memory encoder.
-
-        # prev_sam_mask_logitsThe previously predicted SAM mask logits (which can be fed together with new clicks in demo).
+        run_mem_encoder=True,
+        # The previously predicted SAM mask logits (which can be fed together with new clicks in demo).
+        prev_sam_mask_logits=None,
+    ):
         current_out, sam_outputs, _, _ = self._track_step(
             frame_idx,
             is_init_cond_frame,
@@ -793,7 +882,15 @@ class SAM2Base(torch.nn.Module):
             prev_sam_mask_logits,
         )
 
-        (_,_, _, low_res_masks, high_res_masks, obj_ptr, object_score_logits,) = sam_outputs
+        (
+            _,
+            _,
+            _,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            object_score_logits,
+        ) = sam_outputs
 
         current_out["pred_masks"] = low_res_masks
         current_out["pred_masks_high_res"] = high_res_masks
@@ -864,25 +961,14 @@ class SAM2Base(torch.nn.Module):
         daughter_ids_list,
     ):
         """Update memory features for temporal tracking."""
-        # avant la dernière mémoire de la mère doit être exactement au frame t-1
-        # copie de toute la mémoire
-        #         Hypothèses implicites :
-        #
-        # pas d’occlusion
-        # pas de suppression par NMS
-        # pas de tracking partiel
-        # pas de heatmap detection intermédiaire
-        #
-        # ➡️ Dès qu’un de ces cas arrive → héritage cassé
-        # 👉 La nouvelle version ne change pas la filiation mère → bourgeon,
-        # 👉 elle corrige la façon dont la mémoire est héritée pour refléter la vraie continuité temporelle.
-        #
-        # C’est une correction algorithmique majeure, pas un refactoring cosmétique.
         # Encode current frame predictions into memory features
-        #   t-2 : mère OK
-        # t-1 : mère supprimée (NMS)
-        # t   : division détectée
-        maskmem_features, maskmem_pos_enc = self._encode_memory_in_output(current_vision_feats, feat_sizes, point_inputs,run_mem_encoder,current_out)
+        maskmem_features, maskmem_pos_enc = self._encode_memory_in_output(
+            current_vision_feats,
+            feat_sizes,
+            point_inputs,
+            run_mem_encoder,
+            current_out,
+        )
         
         if maskmem_features is None or maskmem_pos_enc is None:
             return
@@ -897,11 +983,21 @@ class SAM2Base(torch.nn.Module):
             
             if obj_id not in memory_dict:
                 # Initialize memory for new object
-                memory_dict[obj_id] = {"mask_mem_features": maskmem_features[i:i+1],"obj_ptr": current_out["obj_ptr"][i:i+1],"frame_idx": [frame_idx]}
+                memory_dict[obj_id] = {
+                    "mask_mem_features": maskmem_features[i:i+1], 
+                    "obj_ptr": current_out["obj_ptr"][i:i+1], 
+                    "frame_idx": [frame_idx]
+                }
             else:
                 # Update memory for existing object
-                memory_dict[obj_id]["mask_mem_features"] = torch.cat((memory_dict[obj_id]["mask_mem_features"], maskmem_features[i:i+1]), dim=0)
-                memory_dict[obj_id]["obj_ptr"] = torch.cat((memory_dict[obj_id]["obj_ptr"], current_out["obj_ptr"][i:i+1]), dim=0)
+                memory_dict[obj_id]["mask_mem_features"] = torch.cat(
+                    (memory_dict[obj_id]["mask_mem_features"], maskmem_features[i:i+1]), 
+                    dim=0
+                )
+                memory_dict[obj_id]["obj_ptr"] = torch.cat(
+                    (memory_dict[obj_id]["obj_ptr"], current_out["obj_ptr"][i:i+1]), 
+                    dim=0
+                )
                 memory_dict[obj_id]["frame_idx"].append(frame_idx)
         
         # Handle memory inheritance for daughter cells
@@ -924,7 +1020,9 @@ class SAM2Base(torch.nn.Module):
                         prev_frame_idx = idx
                         break
                 if prev_frame_idx is None:
-                    logging.debug(f"Mother ID {mother_id_item} has no memory before frame {frame_idx}")
+                    logging.warning(
+                        f"Mother ID {mother_id_item} has no memory before frame {frame_idx}"
+                    )
                     continue
                 
                 # Transfer mother's memory to daughters
@@ -939,15 +1037,24 @@ class SAM2Base(torch.nn.Module):
                         
                     # Prepend mother's last memory to daughter's memory
                     mother_frame = mother_frames[prev_frame_idx]
-
                     memory_dict[daughter_id_item]["mask_mem_features"] = torch.cat(
-                        (memory_dict[mother_id_item]["mask_mem_features"][prev_frame_idx : prev_frame_idx + 1],
-                            memory_dict[daughter_id_item]["mask_mem_features"],), dim=0,)
-
-                    memory_dict[daughter_id_item]["obj_ptr"] = torch.cat((
-                            memory_dict[mother_id_item]["obj_ptr"][prev_frame_idx : prev_frame_idx + 1],
-                            memory_dict[daughter_id_item]["obj_ptr"],), dim=0,)
-
+                        (
+                            memory_dict[mother_id_item]["mask_mem_features"][
+                                prev_frame_idx : prev_frame_idx + 1
+                            ],
+                            memory_dict[daughter_id_item]["mask_mem_features"],
+                        ),
+                        dim=0,
+                    )
+                    memory_dict[daughter_id_item]["obj_ptr"] = torch.cat(
+                        (
+                            memory_dict[mother_id_item]["obj_ptr"][
+                                prev_frame_idx : prev_frame_idx + 1
+                            ],
+                            memory_dict[daughter_id_item]["obj_ptr"],
+                        ),
+                        dim=0,
+                    )
                     memory_dict[daughter_id_item]["frame_idx"].insert(0, mother_frame)
             except Exception as e:
                 logging.error(f"Error handling memory for mother ID {mother_id.item()}: {str(e)}")
@@ -993,7 +1100,9 @@ class SAM2Base(torch.nn.Module):
         
         return heatmap
 
-    def extract_peak_points(self, heatmap: torch.Tensor, min_dist=2, threshold=0.1):
+    def extract_peak_points(
+        self, heatmap: torch.Tensor, min_dist=2, threshold=0.1
+    ):
         """Extract up to points from heatmap using local max suppression.
 
         Args:
@@ -1007,7 +1116,12 @@ class SAM2Base(torch.nn.Module):
         """
         # Apply max pooling to find local maxima
         heatmap = heatmap.sigmoid()
-        pooled = F.max_pool2d(heatmap.unsqueeze(0).unsqueeze(0), kernel_size=min_dist * 2 + 1,stride=1,padding=min_dist,)
+        pooled = F.max_pool2d(
+            heatmap.unsqueeze(0).unsqueeze(0),
+            kernel_size=min_dist * 2 + 1,
+            stride=1,
+            padding=min_dist,
+        )
         is_peak = (heatmap == pooled[0, 0]) & (heatmap > threshold)
 
         ys, xs = torch.nonzero(is_peak, as_tuple=True)
@@ -1023,7 +1137,10 @@ class SAM2Base(torch.nn.Module):
 
         points = torch.stack([xs, ys], dim=1).float()  # (N, 2)
         points = points.unsqueeze(1)  # (N, 1, 2)
-        assert (heatmap.shape[0] == heatmap.shape[1] and self.image_size % heatmap.shape[0] == 0)
+        assert (
+            heatmap.shape[0] == heatmap.shape[1]
+            and self.image_size % heatmap.shape[0] == 0
+        )
         points = points * (self.image_size // heatmap.shape[0])
         return points
     

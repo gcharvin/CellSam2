@@ -80,7 +80,14 @@ class MemoryAttentionLayer(nn.Module):
         tgt = tgt + self.dropout2(tgt2)
         return tgt
 
-    def forward(self, tgt, memory, pos: Optional[Tensor] = None, query_pos: Optional[Tensor] = None, num_k_exclude_rope: int = 0,) -> torch.Tensor:
+    def forward(
+        self,
+        tgt,
+        memory,
+        pos: Optional[Tensor] = None,
+        query_pos: Optional[Tensor] = None,
+        num_k_exclude_rope: int = 0,
+    ) -> torch.Tensor:
 
         # Self-Attn, Cross-Attn
         tgt = self._forward_sa(tgt, query_pos)
@@ -93,8 +100,14 @@ class MemoryAttentionLayer(nn.Module):
 
 
 class MemoryAttention(nn.Module):
-    def __init__(self, d_model: int,pos_enc_at_input: bool,layer: nn.Module, num_layers: int, batch_first: bool = True,):
-        # Do layers expect batch first input?
+    def __init__(
+        self,
+        d_model: int,
+        pos_enc_at_input: bool,
+        layer: nn.Module,
+        num_layers: int,
+        batch_first: bool = True,  # Do layers expect batch first input?
+    ):
         super().__init__()
         self.d_model = d_model
         self.layers = get_clones(layer, num_layers)
@@ -114,9 +127,14 @@ class MemoryAttention(nn.Module):
         if isinstance(curr, list):
             assert isinstance(curr_pos, list)
             assert len(curr) == len(curr_pos) == 1
-            curr, curr_pos = (curr[0], curr_pos[0],)
+            curr, curr_pos = (
+                curr[0],
+                curr_pos[0],
+            )
 
-        assert (curr.shape[1] == memory.shape[1]), "Batch size must be the same for curr and memory"
+        assert (
+            curr.shape[1] == memory.shape[1]
+        ), "Batch size must be the same for curr and memory"
 
         output = curr
         if self.pos_enc_at_input and curr_pos is not None:
@@ -134,7 +152,13 @@ class MemoryAttention(nn.Module):
             if isinstance(layer.cross_attn_image, RoPEAttention) or isinstance(layer.cross_attn_image, RoPELoRAAdapter):
                 kwds = {"num_k_exclude_rope": num_obj_ptr_tokens}
 
-            output = layer(tgt=output, memory=memory, pos=memory_pos,query_pos=curr_pos, **kwds,)
+            output = layer(
+                tgt=output,
+                memory=memory,
+                pos=memory_pos,
+                query_pos=curr_pos,
+                **kwds,
+            )
         normed_output = self.norm(output)
 
         if self.batch_first:

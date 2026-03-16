@@ -49,9 +49,14 @@ def select_closest_cond_frames(frame_idx, cond_frame_outputs, max_cond_frame_num
         # add other temporally closest conditioning frames until reaching a total
         # of `max_cond_frame_num` conditioning frames.
         num_remain = max_cond_frame_num - len(selected_outputs)
-        inds_remain = sorted((t for t in cond_frame_outputs if t not in selected_outputs), key=lambda x: abs(x - frame_idx),)[:num_remain]
+        inds_remain = sorted(
+            (t for t in cond_frame_outputs if t not in selected_outputs),
+            key=lambda x: abs(x - frame_idx),
+        )[:num_remain]
         selected_outputs.update((t, cond_frame_outputs[t]) for t in inds_remain)
-        unselected_outputs = {t: v for t, v in cond_frame_outputs.items() if t not in selected_outputs}
+        unselected_outputs = {
+            t: v for t, v in cond_frame_outputs.items() if t not in selected_outputs
+        }
 
     return selected_outputs, unselected_outputs
 
@@ -117,7 +122,9 @@ class MLP(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+        self.layers = nn.ModuleList(
+            nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim])
+        )
         self.sigmoid_output = sigmoid_output
         self.act = activation()
 
@@ -168,7 +175,9 @@ def sample_box_points(
     device = masks.device
     box_coords = mask_to_box(masks)
     B, _, H, W = masks.shape
-    box_labels = torch.tensor([top_left_label, bottom_right_label], dtype=torch.int, device=device).repeat(B)
+    box_labels = torch.tensor(
+        [top_left_label, bottom_right_label], dtype=torch.int, device=device
+    ).repeat(B)
     if noise > 0.0:
         if not isinstance(noise_bound, torch.Tensor):
             noise_bound = torch.tensor(noise_bound, device=device)
@@ -180,7 +189,9 @@ def sample_box_points(
         box_noise = box_noise * torch.stack((max_dx, max_dy, max_dx, max_dy), dim=-1)
 
         box_coords = box_coords + box_noise
-        img_bounds = (torch.tensor([W, H, W, H], device=device) - 1)  # uncentered pixel coords
+        img_bounds = (
+            torch.tensor([W, H, W, H], device=device) - 1
+        )  # uncentered pixel coords
         box_coords.clamp_(torch.zeros_like(img_bounds), img_bounds)  # In place clamping
 
     box_coords = box_coords.reshape(-1, 2, 2)  # always 2 points
@@ -254,7 +265,7 @@ def sample_random_points_from_errors(gt_masks, pred_masks, is_bkgd_mask=None, bk
     pts_idx = pts_idx // 3
     
     # Labels: channel 0 (FP) -> 0, channel 1 (TP) -> 1, channel 2 (bkgd) -> 1
-    labels = (pts_channel > 0).to(torch.int32)
+    labels = ((pts_channel > 0)).to(torch.int32)
     
     pts_x = pts_idx % W_im
     pts_y = pts_idx // W_im
@@ -335,7 +346,11 @@ def get_next_point(gt_masks, pred_masks, method, is_bkgd_mask=None, bkgd_mask=No
     else:
         raise ValueError(f"unknown sampling method {method}")
 
-def get_background_masks(data_batch,frame_idx: int,return_mask_flags_only: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def get_background_masks(
+    data_batch, 
+    frame_idx: int, 
+    return_mask_flags_only: bool = False
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Retrieves background masks for objects at a specific frame index.
 

@@ -1,7 +1,7 @@
 # @package _global_
 
 scratch:
-  resolution: 256
+  resolution: 512
   batch_size: 1
   num_train_workers: 2
   num_frames: 3

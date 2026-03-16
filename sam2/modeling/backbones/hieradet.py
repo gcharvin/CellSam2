@@ -13,7 +13,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from iopath.common.file_io import g_pathmgr
 
-from sam2.modeling.backbones.utils import (PatchEmbed, window_partition, window_unpartition,)
+from sam2.modeling.backbones.utils import (
+    PatchEmbed,
+    window_partition,
+    window_unpartition,
+)
 from sam2.modeling.sam2_utils import MLP, DropPath
 
 
@@ -32,7 +36,13 @@ def do_pool(x: torch.Tensor, pool: nn.Module, norm: nn.Module = None) -> torch.T
 
 
 class MultiScaleAttention(nn.Module):
-    def __init__(self,dim: int,dim_out: int,num_heads: int,q_pool: nn.Module = None,):
+    def __init__(
+        self,
+        dim: int,
+        dim_out: int,
+        num_heads: int,
+        q_pool: nn.Module = None,
+    ):
         super().__init__()
 
         self.dim = dim
@@ -96,7 +106,9 @@ class MultiScaleBlock(nn.Module):
 
         self.pool, self.q_stride = None, q_stride
         if self.q_stride:
-            self.pool = nn.MaxPool2d(kernel_size=q_stride, stride=q_stride, ceil_mode=False)
+            self.pool = nn.MaxPool2d(
+                kernel_size=q_stride, stride=q_stride, ceil_mode=False
+            )
 
         self.attn = MultiScaleAttention(
             dim,
@@ -170,9 +182,18 @@ class Hiera(nn.Module):
         head_mul: float = 2.0,  # head_mul factor at stage shift
         window_pos_embed_bkg_spatial_size: Tuple[int, int] = (14, 14),
         # window size per stage, when not using global att.
-        window_spec: Tuple[int, ...] = (8, 4, 14, 7,),
+        window_spec: Tuple[int, ...] = (
+            8,
+            4,
+            14,
+            7,
+        ),
         # global attn in these blocks
-        global_att_blocks: Tuple[int, ...] = (12, 16, 20,),
+        global_att_blocks: Tuple[int, ...] = (
+            12,
+            16,
+            20,
+        ),
         weights_path=None,
         return_interm_layers=True,  # return feats from every stage
     ):
@@ -188,16 +209,24 @@ class Hiera(nn.Module):
         self.q_pool_blocks = [x + 1 for x in self.stage_ends[:-1]][:q_pool]
         self.return_interm_layers = return_interm_layers
 
-        self.patch_embed = PatchEmbed(embed_dim=embed_dim,)
+        self.patch_embed = PatchEmbed(
+            embed_dim=embed_dim,
+        )
         # Which blocks have global att?
         self.global_att_blocks = global_att_blocks
 
         # Windowed positional embedding (https://arxiv.org/abs/2311.05613)
         self.window_pos_embed_bkg_spatial_size = window_pos_embed_bkg_spatial_size
-        self.pos_embed = nn.Parameter(torch.zeros(1, embed_dim, *self.window_pos_embed_bkg_spatial_size))
-        self.pos_embed_window = nn.Parameter(torch.zeros(1, embed_dim, self.window_spec[0], self.window_spec[0]))
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, embed_dim, *self.window_pos_embed_bkg_spatial_size)
+        )
+        self.pos_embed_window = nn.Parameter(
+            torch.zeros(1, embed_dim, self.window_spec[0], self.window_spec[0])
+        )
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        dpr = [
+            x.item() for x in torch.linspace(0, drop_path_rate, depth)
+        ]  # stochastic depth decay rule
 
         cur_stage = 1
         self.blocks = nn.ModuleList()
@@ -244,7 +273,9 @@ class Hiera(nn.Module):
         h, w = hw
         window_embed = self.pos_embed_window
         pos_embed = F.interpolate(self.pos_embed, size=(h, w), mode="bicubic")
-        pos_embed = pos_embed + window_embed.tile([x // y for x, y in zip(pos_embed.shape, window_embed.shape)])
+        pos_embed = pos_embed + window_embed.tile(
+            [x // y for x, y in zip(pos_embed.shape, window_embed.shape)]
+        )
         pos_embed = pos_embed.permute(0, 2, 3, 1)
         return pos_embed
 
@@ -258,7 +289,9 @@ class Hiera(nn.Module):
         outputs = []
         for i, blk in enumerate(self.blocks):
             x = blk(x)
-            if (i == self.stage_ends[-1]) or (i in self.stage_ends and self.return_interm_layers):
+            if (i == self.stage_ends[-1]) or (
+                i in self.stage_ends and self.return_interm_layers
+            ):
                 feats = x.permute(0, 3, 1, 2)
                 outputs.append(feats)
 
