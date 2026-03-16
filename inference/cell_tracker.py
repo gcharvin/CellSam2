@@ -1,3 +1,5 @@
+import shutil
+
 import cv2
 import logging
 import numpy as np
@@ -6,13 +8,11 @@ from torchvision.ops import batched_nms
 from tqdm import tqdm
 
 from sam2.modeling.sam2_base import SAM2Base
-from sam2.utils.amg import (
-    MaskData,
-    batched_mask_to_box,
-)
+from sam2.utils.amg import MaskData,batched_mask_to_box
 from sam2.utils.misc import load_video_frames, read_image
 from sam2.utils.transforms import SAM2Transforms
 
+from inference_utils import create_colored_frame, draw_division_lines, add_frame_number, save_video
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +89,8 @@ class SAM2AutomaticCellTracker:
         )
 
     @torch.inference_mode()
-    def init_state(
-        self,
-        video_path,
-        res_path,
-        offload_video_to_cpu=False,
-        offload_state_to_cpu=False,
-        async_loading_frames=False,
-        max_frame_num_to_track=None,
-    ):
+    def init_state(self,video_path,res_path,offload_video_to_cpu=False,offload_state_to_cpu=False,
+                   async_loading_frames=False,max_frame_num_to_track=None,):
         """Initialize an inference state."""
         compute_device = self.model.device  # device of the model
         images, video_height, video_width, resized_image_size, padding = (
@@ -158,14 +151,8 @@ class SAM2AutomaticCellTracker:
 
         return inference_state
 
-    def predict(
-        self,
-        video_path,
-        res_path,
-        offload_video_to_cpu=True,
-        offload_state_to_cpu=False,
-        max_frame_num_to_track=None,
-    ):
+    def predict(self,video_path, res_path, offload_video_to_cpu=True,offload_state_to_cpu=False,
+                max_frame_num_to_track=None, fps=4):
         """Predict and track cells throughout a video.
 
         Args:
@@ -193,7 +180,7 @@ class SAM2AutomaticCellTracker:
         # Detect and track the detected cells through the video
         tracking_results = self.track_cells(inference_state)
 
-        self.save_tracking_results(inference_state, tracking_results)
+        self.save_tracking_results(inference_state, tracking_results, fps=fps)
 
         return tracking_results
 
@@ -246,22 +233,14 @@ class SAM2AutomaticCellTracker:
         points = torch.tensor(points, device=self.device, dtype=torch.float32)  # [N, 2]
 
         # Create corresponding labels tensor (all foreground)
-        labels = torch.ones(
-            (len(points), 1), dtype=torch.int, device=self.device
-        )  # [N]
+        labels = torch.ones((len(points), 1), dtype=torch.int, device=self.device)  # [N]
 
         # Save points and labels in inference_state for later reference
-        inference_state["point_inputs"][0] = {
-            "point_coords": points,
-            "point_labels": labels,
-        }
+        inference_state["point_inputs"][0] = { "point_coords": points, "point_labels": labels,}
 
         if self.segment:
             for i in range(1, len(inference_state["images"])):
-                inference_state["point_inputs"][i] = {
-                    "point_coords": points,
-                    "point_labels": labels,
-                }
+                inference_state["point_inputs"][i] = {"point_coords": points,"point_labels": labels,}
 
         return inference_state
 
@@ -278,9 +257,7 @@ class SAM2AutomaticCellTracker:
         tracking_results = []
 
         # Start propagation through the video
-        for frame_idx, inference_state, track_mask in self.propagate_in_video(
-            inference_state
-        ):
+        for frame_idx, inference_state, track_mask in self.propagate_in_video(inference_state):
             tracking_results.append(track_mask)
 
             self.save_ctc(track_mask, frame_idx, inference_state)
@@ -288,11 +265,7 @@ class SAM2AutomaticCellTracker:
         return tracking_results
 
     @torch.inference_mode()
-    def propagate_in_video(
-        self,
-        inference_state,
-        start_frame_idx=0,
-    ):
+    def propagate_in_video(self,inference_state,start_frame_idx=0,):
         """Propagate the input points across frames to track in the entire video."""
         num_frames = inference_state["num_frames"]
         max_frame_num_to_track = inference_state["max_frame_num_to_track"]
@@ -307,17 +280,10 @@ class SAM2AutomaticCellTracker:
         for frame_idx in tqdm(processing_order, desc="propagate in video"):
             if frame_idx == 0 or self.segment:
                 if self.use_heatmap:
-                    input_points, point_labels = self.get_input_points_from_heatmap(
-                        inference_state, frame_idx
-                    )
-                    inference_state["point_inputs"][frame_idx] = {
-                        "point_coords": input_points,
-                        "point_labels": point_labels,
-                    }
+                    input_points, point_labels = self.get_input_points_from_heatmap(inference_state, frame_idx)
+                    inference_state["point_inputs"][frame_idx] = {"point_coords": input_points,"point_labels": point_labels,}
                 tracking_object_ids = None
-                batch_size = inference_state["point_inputs"][frame_idx][
-                    "point_coords"
-                ].shape[0]
+                batch_size = inference_state["point_inputs"][frame_idx]["point_coords"].shape[0]
                 is_init_cond_frame = True
             else:
                 tracking_object_ids = inference_state["obj_ids"][frame_idx - 1]
@@ -325,27 +291,15 @@ class SAM2AutomaticCellTracker:
                 is_init_cond_frame = False
 
             if batch_size == 0:
-                inference_state["obj_ids"][frame_idx] = torch.zeros(
-                    0, device=self.device, dtype=torch.int32
-                )
-                inference_state["parent_ids"][frame_idx] = torch.zeros(
-                    0, device=self.device, dtype=torch.int32
-                )
-                track_mask = np.zeros(
-                    (inference_state["video_height"], inference_state["video_width"]),
-                    dtype=np.uint16,
-                )
+                inference_state["obj_ids"][frame_idx] = torch.zeros(0, device=self.device, dtype=torch.int32)
+                inference_state["parent_ids"][frame_idx] = torch.zeros(0, device=self.device, dtype=torch.int32)
+                track_mask = np.zeros((inference_state["video_height"], inference_state["video_width"]),dtype=np.uint16,)
                 yield frame_idx, inference_state, track_mask
 
             else:
                 # Retrieve image features (only need to compute once for all objects)
-                (
-                    _,
-                    _,
-                    current_vision_feats,
-                    current_vision_pos_embeds,
-                    feat_sizes,
-                ) = self._get_image_feature(inference_state, frame_idx, batch_size)
+                (_,_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) =\
+                    self._get_image_feature(inference_state, frame_idx, batch_size)
 
                 # Run the core tracking step
                 current_out, sam_outputs, high_res_features, pix_feat = (
@@ -354,9 +308,7 @@ class SAM2AutomaticCellTracker:
                         current_vision_feats=current_vision_feats,
                         current_vision_pos_embeds=current_vision_pos_embeds,
                         feat_sizes=feat_sizes,
-                        point_inputs=inference_state["point_inputs"].get(
-                            frame_idx, None
-                        ),
+                        point_inputs=inference_state["point_inputs"].get(frame_idx, None),
                         mask_inputs=None,
                         num_frames=inference_state["num_frames"],
                         prev_sam_mask_logits=None,
@@ -375,33 +327,21 @@ class SAM2AutomaticCellTracker:
                 )
 
                 if not self.segment and frame_idx > 0 and self.use_heatmap:
-                    input_points, point_labels = self.get_input_points_from_heatmap(
-                        inference_state, frame_idx
-                    )
+                    input_points, point_labels = self.get_input_points_from_heatmap(inference_state, frame_idx)
 
                     if input_points.shape[0] > 0:
                         input_points_copy = input_points.clone()
 
-                        pad_left, pad_right, pad_top, pad_bottom = inference_state[
-                            "padding"
-                        ]
+                        pad_left, pad_right, pad_top, pad_bottom = inference_state["padding"]
                         input_points[:, 0, 0] -= pad_left
                         input_points[:, 0, 1] -= pad_top
 
-                        input_points[:, 0, 0] = input_points[:, 0, 0] * (
-                            inference_state["video_width"]
-                            / inference_state["resized_image_size"][1]
-                        )
-                        input_points[:, 0, 1] = input_points[:, 0, 1] * (
-                            inference_state["video_height"]
-                            / inference_state["resized_image_size"][0]
-                        )
+                        input_points[:, 0, 0] = input_points[:, 0, 0] * (inference_state["video_width"]/ inference_state["resized_image_size"][1])
+                        input_points[:, 0, 1] = input_points[:, 0, 1] * (inference_state["video_height"]/ inference_state["resized_image_size"][0])
 
                         # Convert to numpy and int
                         input_points_np = input_points.cpu().numpy().astype(np.int32)
-                        track_cell_ids = track_mask[
-                            input_points_np[:, 0, 1], input_points_np[:, 0, 0]
-                        ]
+                        track_cell_ids = track_mask[input_points_np[:, 0, 1], input_points_np[:, 0, 0]]
 
                         # Find indices where track_cell_ids is 0 (background)
                         background_point_indices = np.where(track_cell_ids == 0)[0]
@@ -410,23 +350,11 @@ class SAM2AutomaticCellTracker:
                             input_points = input_points_copy[background_point_indices]
                             point_labels = point_labels[background_point_indices]
 
-                            inference_state["point_inputs"][frame_idx] = {
-                                "point_coords": input_points,
-                                "point_labels": point_labels,
-                            }
+                            inference_state["point_inputs"][frame_idx] = {"point_coords": input_points,"point_labels": point_labels,}
                             batch_size = input_points.shape[0]
 
                             # Retrieve image features (only need to compute once for all objects)
-                            (
-                                _,
-                                _,
-                                current_vision_feats,
-                                current_vision_pos_embeds,
-                                feat_sizes,
-                            ) = self._get_image_feature(
-                                inference_state, frame_idx, batch_size
-                            )
-
+                            (_,_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) = self._get_image_feature(inference_state, frame_idx, batch_size)
                             # Run the core tracking step
                             current_out, sam_outputs, high_res_features, pix_feat = (
                                 self.model._track_step(
@@ -434,9 +362,7 @@ class SAM2AutomaticCellTracker:
                                     current_vision_feats=current_vision_feats,
                                     current_vision_pos_embeds=current_vision_pos_embeds,
                                     feat_sizes=feat_sizes,
-                                    point_inputs=inference_state["point_inputs"].get(
-                                        frame_idx, None
-                                    ),
+                                    point_inputs=inference_state["point_inputs"].get(frame_idx, None),
                                     mask_inputs=None,
                                     num_frames=inference_state["num_frames"],
                                     prev_sam_mask_logits=None,
@@ -445,64 +371,36 @@ class SAM2AutomaticCellTracker:
                                 )
                             )
 
-                            inference_state, detected_mask = self.update_cell_tracks(
-                                inference_state,
-                                frame_idx,
-                                sam_outputs,
-                                current_out,
-                                heatmap_input=True,
-                            )
+                            inference_state, detected_mask = self.update_cell_tracks(inference_state,frame_idx,sam_outputs,current_out,heatmap_input=True,)
 
                             if detected_mask.sum() > 0:
                                 detected_cells = np.unique(detected_mask)
                                 detected_cells = detected_cells[detected_cells != 0]
 
                                 if len(inference_state["lost_obj_ids"][frame_idx]) > 0:
-                                    lost_obj_ids = inference_state["lost_obj_ids"][
-                                        frame_idx
-                                    ]
-                                    lost_high_res_masks = inference_state[
-                                        "lost_high_res_masks"
-                                    ][frame_idx]
+                                    lost_obj_ids = inference_state["lost_obj_ids"][frame_idx]
+                                    lost_high_res_masks = inference_state["lost_high_res_masks"][frame_idx]
 
                                     # Calculate IoU between each detected cell and lost cell
-                                    ious = np.zeros(
-                                        (len(detected_cells), len(lost_obj_ids))
-                                    )
+                                    ious = np.zeros((len(detected_cells), len(lost_obj_ids)))
                                     for i, detected_id in enumerate(detected_cells):
-                                        detected_mask_binary = (
-                                            detected_mask == detected_id
-                                        )
+                                        detected_mask_binary = (detected_mask == detected_id)
                                         for j, lost_id in enumerate(lost_obj_ids):
-                                            intersection = np.logical_and(
-                                                detected_mask_binary,
-                                                lost_high_res_masks[j],
-                                            ).sum()
-                                            union = np.logical_or(
-                                                detected_mask_binary,
-                                                lost_high_res_masks[j],
-                                            ).sum()
-                                            ious[i, j] = (
-                                                intersection / union if union > 0 else 0
-                                            )
+                                            intersection = np.logical_and(detected_mask_binary,lost_high_res_masks[j],).sum()
+                                            union = np.logical_or(detected_mask_binary,lost_high_res_masks[j],).sum()
+                                            ious[i, j] = (intersection / union if union > 0 else 0)
 
                                     # Find the lost cell with the highest IoU for each detected cell
                                     max_ious = np.max(ious, axis=1)
                                     lost_cell_indices = np.argmax(ious, axis=1)
 
                                     # Process each detected cell in order of IoU
-                                    sorted_indices = np.argsort(
-                                        -max_ious
-                                    )  # Sort by descending IoU
+                                    sorted_indices = np.argsort(-max_ious)  # Sort by descending IoU
                                     processed_lost_cells = set()
-                                    cells_to_remove = (
-                                        set()
-                                    )  # Track which cells to remove
+                                    cells_to_remove = (set())  # Track which cells to remove
 
                                     for idx in sorted_indices:
-                                        if (
-                                            max_ious[idx] > 0
-                                        ):  # If cell has positive object score, it is assumed to be match if there is any overlap
+                                        if max_ious[idx] > 0:  # If cell has positive object score, it is assumed to be match if there is any overlap
                                             detected_cell_id = int(detected_cells[idx])
                                             lost_idx = lost_cell_indices[idx]
                                             lost_cell_id = int(lost_obj_ids[lost_idx])
@@ -511,79 +409,35 @@ class SAM2AutomaticCellTracker:
                                             if lost_cell_id in processed_lost_cells:
                                                 continue
 
-                                            if (
-                                                frame_idx - 1
-                                                in inference_state["memory_dict"][
-                                                    lost_cell_id
-                                                ]["frame_idx"]
-                                            ):
-                                                detected_mask[
-                                                    detected_mask == detected_cell_id
-                                                ] = lost_cell_id
-                                                inference_state["memory_dict"][
-                                                    lost_cell_id
-                                                ]["mask_mem_features"] = torch.cat(
-                                                    (
-                                                        inference_state["memory_dict"][
-                                                            lost_cell_id
-                                                        ]["mask_mem_features"],
-                                                        inference_state["memory_dict"][
-                                                            detected_cell_id
-                                                        ]["mask_mem_features"],
-                                                    ),
-                                                    dim=0,
-                                                )
-                                                inference_state["memory_dict"][
-                                                    lost_cell_id
-                                                ]["obj_ptr"] = torch.cat(
-                                                    (
-                                                        inference_state["memory_dict"][
-                                                            lost_cell_id
-                                                        ]["obj_ptr"],
-                                                        inference_state["memory_dict"][
-                                                            detected_cell_id
-                                                        ]["obj_ptr"],
-                                                    ),
-                                                    dim=0,
-                                                )
-                                                inference_state["memory_dict"][
-                                                    lost_cell_id
-                                                ]["frame_idx"].append(frame_idx)
-                                                inference_state["obj_ids"][frame_idx][
-                                                    inference_state["obj_ids"][
-                                                        frame_idx
-                                                    ]
-                                                    == detected_cell_id
-                                                ] = lost_cell_id
+                                            if frame_idx - 1 in inference_state["memory_dict"][lost_cell_id]["frame_idx"]:
+                                                detected_mask[detected_mask == detected_cell_id] = lost_cell_id
+                                                inference_state["memory_dict"][lost_cell_id]["mask_mem_features"] = torch.cat(
+                                                    (inference_state["memory_dict"][lost_cell_id]["mask_mem_features"],
+                                                        inference_state["memory_dict"][detected_cell_id]["mask_mem_features"],
+                                                    ), dim=0,)
+                                                inference_state["memory_dict"][lost_cell_id]["obj_ptr"] = torch.cat(
+                                                    (inference_state["memory_dict"][lost_cell_id]["obj_ptr"],
+                                                        inference_state["memory_dict"][detected_cell_id]["obj_ptr"],
+                                                    ),dim=0,)
+                                                inference_state["memory_dict"][lost_cell_id]["frame_idx"].append(frame_idx)
+                                                inference_state["obj_ids"][frame_idx][inference_state["obj_ids"][frame_idx]== detected_cell_id] = lost_cell_id
 
-                                                cells_to_remove.add(
-                                                    detected_cell_id
-                                                )  # Mark for removal
+                                                cells_to_remove.add(detected_cell_id)  # Mark for removal
                                                 processed_lost_cells.add(lost_cell_id)
 
-                                                del inference_state["memory_dict"][
-                                                    detected_cell_id
-                                                ]
+                                                del inference_state["memory_dict"][detected_cell_id]
 
                                     # Remove the cells after processing all matches
-                                    detected_cells = detected_cells[
-                                        ~np.isin(detected_cells, list(cells_to_remove))
-                                    ]
+                                    detected_cells = detected_cells[~np.isin(detected_cells, list(cells_to_remove))]
 
                                 # Handle remaining detected cells
                                 for detected_cell_id in detected_cells:
                                     # Get binary mask for current detected cell
-                                    detected_mask_binary = (
-                                        detected_mask == detected_cell_id
-                                    )
+                                    detected_mask_binary = (detected_mask == detected_cell_id)
 
                                     # Get all unique track IDs that overlap with this detected cell
-                                    overlapping_track_ids = np.unique(
-                                        track_mask[detected_mask_binary]
-                                    )
-                                    overlapping_track_ids = overlapping_track_ids[
-                                        overlapping_track_ids > 0
-                                    ]  # Remove background (0)
+                                    overlapping_track_ids = np.unique(track_mask[detected_mask_binary])
+                                    overlapping_track_ids = overlapping_track_ids[overlapping_track_ids > 0]  # Remove background (0)
 
                                     if len(overlapping_track_ids) > 0:
                                         # Calculate IoU with each overlapping track
@@ -592,67 +446,30 @@ class SAM2AutomaticCellTracker:
 
                                         for track_id in overlapping_track_ids:
                                             track_mask_binary = track_mask == track_id
-                                            intersection = np.logical_and(
-                                                detected_mask_binary, track_mask_binary
-                                            ).sum()
-                                            union = np.logical_or(
-                                                detected_mask_binary, track_mask_binary
-                                            ).sum()
-                                            iou = (
-                                                intersection / union if union > 0 else 0
-                                            )
+                                            intersection = np.logical_and(detected_mask_binary, track_mask_binary).sum()
+                                            union = np.logical_or(detected_mask_binary, track_mask_binary).sum()
+                                            iou = (intersection / union if union > 0 else 0)
 
                                             if iou > best_iou:
                                                 best_iou = iou
                                                 best_track_id = track_id
 
-                                        if (
-                                            best_iou > 0.05
-                                        ):  # If there's any overlap, assume it's the same cell
+                                        if best_iou > 0.05:  # If there's any overlap, assume it's the same cell
                                             # Update the detected mask to use the best matching track ID
-                                            detected_mask[detected_mask_binary] = (
-                                                best_track_id
-                                            )
-                                            inference_state["memory_dict"][
-                                                best_track_id
-                                            ]["mask_mem_features"][
-                                                -1
-                                            ] = inference_state["memory_dict"][
-                                                detected_cell_id
-                                            ]["mask_mem_features"][0]
-                                            inference_state["memory_dict"][
-                                                best_track_id
-                                            ]["obj_ptr"][-1] = inference_state[
-                                                "memory_dict"
-                                            ][detected_cell_id]["obj_ptr"][0]
-                                            inference_state["parent_ids"][frame_idx] = (
-                                                inference_state["parent_ids"][
-                                                    frame_idx
-                                                ][
-                                                    inference_state["obj_ids"][
-                                                        frame_idx
-                                                    ]
-                                                    != detected_cell_id
-                                                ]
-                                            )
-                                            inference_state["obj_ids"][frame_idx] = (
-                                                inference_state["obj_ids"][frame_idx][
-                                                    inference_state["obj_ids"][
-                                                        frame_idx
-                                                    ]
-                                                    != detected_cell_id
-                                                ]
-                                            )
+                                            detected_mask[detected_mask_binary] = (best_track_id)
+                                            inference_state["memory_dict"][best_track_id]["mask_mem_features"][-1] =\
+                                                inference_state["memory_dict"][detected_cell_id]["mask_mem_features"][0]
+                                            inference_state["memory_dict"][best_track_id]["obj_ptr"][-1] =\
+                                                inference_state["memory_dict"][detected_cell_id]["obj_ptr"][0]
+                                            inference_state["parent_ids"][frame_idx] = \
+                                                inference_state["parent_ids"][frame_idx][inference_state["obj_ids"][frame_idx]!= detected_cell_id]
 
-                                            del inference_state["memory_dict"][
-                                                detected_cell_id
-                                            ]
+                                            inference_state["obj_ids"][frame_idx] = inference_state["obj_ids"][frame_idx][inference_state["obj_ids"][frame_idx]!= detected_cell_id]
 
-                                track_mask[(detected_mask > 0) * (track_mask == 0)] = (
-                                    detected_mask[
-                                        (detected_mask > 0) * (track_mask == 0)
-                                    ]
-                                )
+
+                                            del inference_state["memory_dict"][detected_cell_id]
+
+                                track_mask[(detected_mask > 0) * (track_mask == 0)] = detected_mask[(detected_mask > 0) * (track_mask == 0)]
 
                 yield frame_idx, inference_state, track_mask
 
@@ -660,9 +477,7 @@ class SAM2AutomaticCellTracker:
     def _get_image_feature(self, inference_state, frame_idx, batch_size):
         """Compute the image features on a given frame."""
         # Look up in the cache first
-        image, backbone_out = inference_state["cached_features"].get(
-            frame_idx, (None, None)
-        )
+        image, backbone_out = inference_state["cached_features"].get(frame_idx, (None, None))
         if backbone_out is None:
             # Cache miss -- we will run inference on a single image
             device = inference_state["device"]
@@ -681,9 +496,7 @@ class SAM2AutomaticCellTracker:
             "vision_pos_enc": backbone_out["vision_pos_enc"].copy(),
         }
         for i, feat in enumerate(expanded_backbone_out["backbone_fpn"]):
-            expanded_backbone_out["backbone_fpn"][i] = feat.expand(
-                batch_size, -1, -1, -1
-            )
+            expanded_backbone_out["backbone_fpn"][i] = feat.expand(batch_size, -1, -1, -1)
         for i, pos in enumerate(expanded_backbone_out["vision_pos_enc"]):
             pos = pos.expand(batch_size, -1, -1, -1)
             expanded_backbone_out["vision_pos_enc"][i] = pos
@@ -692,28 +505,17 @@ class SAM2AutomaticCellTracker:
         features = (expanded_image,) + features
         return features
 
-    def update_cell_tracks(
-        self,
-        inference_state,
-        frame_idx,
-        sam_outputs,
-        current_out,
-        tracking_object_ids=None,
-        heatmap_input=False,
-    ):
+    def update_cell_tracks(self,inference_state,
+                           frame_idx,
+                           sam_outputs,
+                           current_out,
+                           tracking_object_ids=None,
+                           heatmap_input=False,):
         """Update the cell tracks based on the current output and SAM outputs."""
         obj_ids = tracking_object_ids
 
         # Unpack SAM outputs
-        (
-            ious,
-            low_res_masks,
-            high_res_masks,
-            obj_ptr,
-            object_score_logits_dict,
-            div_score_logits,
-            is_dividing,
-        ) = sam_outputs
+        (ious,low_res_masks,high_res_masks,obj_ptr,object_score_logits_dict,div_score_logits,is_dividing,) = sam_outputs
 
         #
         save_masks = torch.zeros_like(high_res_masks)
@@ -726,9 +528,7 @@ class SAM2AutomaticCellTracker:
             mask_binary = mask > self.mask_threshold
             if mask_binary.any():
                 # Find connected components
-                num_labels, labels = cv2.connectedComponents(
-                    mask_binary.astype(np.uint8)
-                )
+                num_labels, labels = cv2.connectedComponents(mask_binary.astype(np.uint8))
                 if num_labels > 1:  # If there are multiple components
                     # Find sizes of all components
                     unique_labels, counts = np.unique(labels, return_counts=True)
@@ -736,15 +536,11 @@ class SAM2AutomaticCellTracker:
                     largest_label = unique_labels[1:][np.argmax(counts[1:])]
                     # Keep only largest component
                     mask_binary = labels == largest_label
-                    save_masks[i, 0][
-                        torch.from_numpy(mask_binary).to(high_res_masks.device)
-                    ] = high_res_masks[i, 0][
-                        torch.from_numpy(mask_binary).to(high_res_masks.device)
-                    ]
+                    save_masks[i, 0][torch.from_numpy(mask_binary).to(high_res_masks.device)] =\
+                        high_res_masks[i, 0][torch.from_numpy(mask_binary).to(high_res_masks.device)]
                 else:
-                    save_masks[i, 0][high_res_masks[i, 0] > self.mask_threshold] = (
+                    save_masks[i, 0][high_res_masks[i, 0] > self.mask_threshold] =\
                         high_res_masks[i, 0][high_res_masks[i, 0] > self.mask_threshold]
-                    )
 
                 # Get max scores across all masks for each pixel
         if obj_ids is not None and is_dividing is not None and is_dividing.any():
@@ -765,15 +561,11 @@ class SAM2AutomaticCellTracker:
                     obj_ptr[[idx0, idx1]] = obj_ptr[[idx1, idx0]]
                     for key, value in object_score_logits_dict.items():
                         if value.shape[0] == high_res_masks.shape[0]:
-                            object_score_logits_dict[key][[idx0, idx1]] = value[
-                                [idx1, idx0]
-                            ]
+                            object_score_logits_dict[key][[idx0, idx1]] = value[[idx1, idx0]]
 
                 for div_counter, obj_idx in enumerate(div_indices.tolist()):
                     mother_id = obj_ids[obj_idx]
-                    prev_idx = torch.nonzero(prev_obj_ids == mother_id, as_tuple=True)[
-                        0
-                    ]
+                    prev_idx = torch.nonzero(prev_obj_ids == mother_id, as_tuple=True)[0]
                     if prev_idx.numel() == 0:
                         continue
                     prev_mask = prev_masks[prev_idx[0], 0] > self.mask_threshold
@@ -795,12 +587,11 @@ class SAM2AutomaticCellTracker:
                         swap_mask_pair(mask_idx0, mask_idx1)
                         swapped_div_indices.add(int(obj_idx))
         argmax_scores = torch.max(save_masks[:, 0], dim=0)[1]  # shape: (H, W)
+
         # Count pixels for each mask index (excluding background)
         valid_mask = save_masks[:, 0].sum(0) > 0
         valid_indices = argmax_scores[valid_mask]
-        max_mask_area = torch.bincount(
-            valid_indices.flatten(), minlength=len(save_masks)
-        )
+        max_mask_area = torch.bincount(valid_indices.flatten(), minlength=len(save_masks))
 
         keep_tokens = (
             (object_score_logits_dict["post_div"][:, 0] > self.obj_score_thresh)
@@ -830,16 +621,11 @@ class SAM2AutomaticCellTracker:
         data.filter(keep_by_nms)
 
         removed_indices = torch.nonzero(keep_tokens)[
-            ~torch.isin(
-                torch.arange(keep_tokens.sum(), device=keep_tokens.device), keep_by_nms
-            )
-        ]
+            ~torch.isin(torch.arange(keep_tokens.sum(), device=keep_tokens.device), keep_by_nms)]
         keep_tokens[removed_indices] = False
 
         # Store which cells are predicted to be objects but are not kept by NMS or iou score or mask threshold
-        valid_next_frame_mask = (
-            object_score_logits_dict["post_div"][:, 0] > self.obj_score_thresh
-        )
+        valid_next_frame_mask = object_score_logits_dict["post_div"][:, 0] > self.obj_score_thresh
 
         if heatmap_input:
             obj_ids = torch.arange(
@@ -849,20 +635,12 @@ class SAM2AutomaticCellTracker:
                 dtype=torch.int32,
             )
             prev_obj_ids = obj_ids.clone()
-            inference_state["obj_ids"][frame_idx] = torch.cat(
-                [inference_state["obj_ids"][frame_idx], obj_ids]
-            )
-            inference_state["max_obj_id"] = max(
-                obj_ids.tolist() + [inference_state["max_obj_id"]]
-            )
+            inference_state["obj_ids"][frame_idx] = torch.cat([inference_state["obj_ids"][frame_idx], obj_ids])
+            inference_state["max_obj_id"] = max(obj_ids.tolist() + [inference_state["max_obj_id"]])
             mother_ids = []
             daughter_ids_list = []
-            parent_ids = torch.zeros(
-                len(obj_ids), device=self.device, dtype=torch.int32
-            )
-            inference_state["parent_ids"][frame_idx] = torch.cat(
-                [inference_state["parent_ids"][frame_idx], parent_ids]
-            )
+            parent_ids = torch.zeros(len(obj_ids), device=self.device, dtype=torch.int32)
+            inference_state["parent_ids"][frame_idx] = torch.cat([inference_state["parent_ids"][frame_idx], parent_ids])
 
         elif obj_ids is None:  # only in first frame
             num_cells = data["masks"].shape[0]
@@ -872,21 +650,15 @@ class SAM2AutomaticCellTracker:
             inference_state["max_obj_id"] = max(obj_ids.tolist())
             mother_ids = []
             daughter_ids_list = []
-            parent_ids = torch.zeros(
-                len(obj_ids), device=self.device, dtype=torch.int32
-            )
+            parent_ids = torch.zeros(len(obj_ids), device=self.device, dtype=torch.int32)
             inference_state["parent_ids"] = {frame_idx: parent_ids}
-            inference_state["lost_obj_ids"] = {
-                frame_idx: torch.zeros(0, device=self.device, dtype=torch.int32)
-            }
+            inference_state["lost_obj_ids"] = {frame_idx: torch.zeros(0, device=self.device, dtype=torch.int32)}
             inference_state["lost_high_res_masks"] = {}
         else:
             # Build post-division object IDs in the same order as SAM masks.
             prev_obj_ids = obj_ids.clone()
             mother_ids = obj_ids[is_dividing]
-            daughter_ids_list = prev_obj_ids.new_zeros(
-                (len(prev_obj_ids), 2), dtype=torch.int32
-            )
+            daughter_ids_list = prev_obj_ids.new_zeros((len(prev_obj_ids), 2), dtype=torch.int32)
 
             non_div_indices = torch.nonzero(~is_dividing, as_tuple=True)[0]
             div_indices = torch.nonzero(is_dividing, as_tuple=True)[0]
@@ -913,9 +685,7 @@ class SAM2AutomaticCellTracker:
                 else:
                     obj_ids_for_masks.extend([mother_id, bud_id])
 
-            obj_ids = torch.tensor(
-                obj_ids_for_masks, device=self.device, dtype=torch.int32
-            )
+            obj_ids = torch.tensor(obj_ids_for_masks, device=self.device, dtype=torch.int32)
 
             # Now filter based on NMS results
             lost_obj_ids = obj_ids[valid_next_frame_mask * (~keep_tokens)]
@@ -923,24 +693,14 @@ class SAM2AutomaticCellTracker:
             lost_obj_ids = [obj_id for obj_id in lost_obj_ids if obj_id in prev_obj_ids]
             inference_state["lost_obj_ids"][frame_idx] = lost_obj_ids
             if len(lost_obj_ids) > 0:
-                lost_high_res_masks = high_res_masks[
-                    valid_next_frame_mask * (~keep_tokens)
-                ].flatten(0, 1)
-                lost_high_res_masks[
-                    :, (data["masks"] > self.mask_threshold).sum(0) > 0
-                ] = -torch.inf
-                lost_high_res_masks = self.postprocess_mask(
-                    lost_high_res_masks, inference_state
-                )
-                inference_state["lost_high_res_masks"][frame_idx] = (
-                    lost_high_res_masks > self.mask_threshold
-                )
+                lost_high_res_masks = high_res_masks[valid_next_frame_mask * (~keep_tokens)].flatten(0, 1)
+                lost_high_res_masks[:, (data["masks"] > self.mask_threshold).sum(0) > 0] = -torch.inf
+                lost_high_res_masks = self.postprocess_mask(lost_high_res_masks, inference_state)
+                inference_state["lost_high_res_masks"][frame_idx] = (lost_high_res_masks > self.mask_threshold)
 
             obj_ids = obj_ids[keep_tokens]
 
-            parent_ids = torch.zeros(
-                len(obj_ids), device=self.device, dtype=torch.int32
-            )
+            parent_ids = torch.zeros(len(obj_ids), device=self.device, dtype=torch.int32)
 
             # Update parent IDs for buds that survived NMS, preserving mother IDs in asym mode.
             for div_idx, mother_id in enumerate(mother_ids.tolist()):
@@ -960,9 +720,7 @@ class SAM2AutomaticCellTracker:
                     daughter_ids_list[div_indices[div_idx], 0] = 0
 
             inference_state["obj_ids"][frame_idx] = obj_ids
-            inference_state["max_obj_id"] = max(
-                obj_ids.tolist() + [inference_state["max_obj_id"]]
-            )
+            inference_state["max_obj_id"] = max(obj_ids.tolist() + [inference_state["max_obj_id"]])
             inference_state["parent_ids"][frame_idx] = parent_ids
 
         current_out["pred_masks_high_res"] = data["masks"]
@@ -973,15 +731,8 @@ class SAM2AutomaticCellTracker:
             assert current_out["pred_masks_high_res"].shape[0] == len(obj_ids)
 
         # Retrieve image features (only need to compute once for all objects)
-        (
-            _,
-            _,
-            current_vision_feats,
-            current_vision_pos_embeds,
-            feat_sizes,
-        ) = self._get_image_feature(
-            inference_state, frame_idx, current_out["pred_masks_high_res"].shape[0]
-        )
+        (_,_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) = self._get_image_feature(
+            inference_state, frame_idx, current_out["pred_masks_high_res"].shape[0])
 
         if not self.segment:
             inference_state["memory_dict"] = self.model._update_memory_features(
@@ -1002,10 +753,7 @@ class SAM2AutomaticCellTracker:
 
         # If no masks are predicted, return an empty track mask
         if data["masks"].shape[0] == 0:
-            track_mask = np.zeros(
-                (inference_state["video_height"], inference_state["video_width"]),
-                dtype=np.uint16,
-            )
+            track_mask = np.zeros((inference_state["video_height"], inference_state["video_width"]),dtype=np.uint16,)
             inference_state["prev_frame_idx"] = frame_idx
             inference_state["prev_masks"] = data["save_masks"].detach()
             inference_state["prev_obj_ids"] = obj_ids.detach()
@@ -1027,12 +775,8 @@ class SAM2AutomaticCellTracker:
 
         if inference_state.get("prev_frame_idx") == frame_idx:
             # Merge heatmap detections into per-frame cache for next step.
-            inference_state["prev_masks"] = torch.cat(
-                [inference_state["prev_masks"], data["save_masks"].detach()], dim=0
-            )
-            inference_state["prev_obj_ids"] = torch.cat(
-                [inference_state["prev_obj_ids"], obj_ids.detach()], dim=0
-            )
+            inference_state["prev_masks"] = torch.cat([inference_state["prev_masks"], data["save_masks"].detach()], dim=0)
+            inference_state["prev_obj_ids"] = torch.cat([inference_state["prev_obj_ids"], obj_ids.detach()], dim=0)
         else:
             inference_state["prev_frame_idx"] = frame_idx
             inference_state["prev_masks"] = data["save_masks"].detach()
@@ -1048,9 +792,7 @@ class SAM2AutomaticCellTracker:
 
         masks = masks[:, pad_top:pad_bottom, pad_left:pad_right]
         masks = masks.permute(1, 2, 0).cpu().numpy()
-        masks = cv2.resize(
-            masks, (inference_state["video_width"], inference_state["video_height"])
-        )
+        masks = cv2.resize(masks, (inference_state["video_width"], inference_state["video_height"]))
         if masks.ndim == 2:
             masks = masks[None, ...]
         else:
@@ -1059,21 +801,11 @@ class SAM2AutomaticCellTracker:
         return masks
 
     def get_input_points_from_heatmap(self, inference_state, frame_idx):
-        (
-            _,
-            _,
-            current_vision_feats,
-            current_vision_pos_embeds,
-            feat_sizes,
-        ) = self._get_image_feature(inference_state, frame_idx, 1)
+        (_,_,current_vision_feats,current_vision_pos_embeds,feat_sizes,) = self._get_image_feature(inference_state, frame_idx, 1)
 
-        heatmap_predictions = self.model.get_heatmap_predictions(
-            current_vision_feats, feat_sizes
-        )[0, 0]
+        heatmap_predictions = self.model.get_heatmap_predictions(current_vision_feats, feat_sizes)[0, 0]
         input_points = self.model.extract_peak_points(heatmap_predictions)
-        point_labels = torch.ones(
-            (input_points.shape[0], 1), dtype=torch.int, device=self.device
-        )
+        point_labels = torch.ones((input_points.shape[0], 1), dtype=torch.int, device=self.device)
 
         return input_points, point_labels
     
@@ -1091,75 +823,48 @@ class SAM2AutomaticCellTracker:
             obj_set = set(cell_ids.tolist())
             missing_ids = sorted(obj_set - track_set)
             extra_ids = sorted(track_set - obj_set)
-            logger.warning(
-                "Mismatch between obj_ids and track_mask ids at frame %s "
-                "(missing=%s extra=%s).",
-                frame_idx,
-                missing_ids[:10],
-                extra_ids[:10],
-            )
+            logger.warning("Mismatch between obj_ids and track_mask ids at frame %s "
+                "(missing=%s extra=%s).",frame_idx, missing_ids[:10],extra_ids[:10],)
 
         if len(cell_ids_track_mask) > 0:
             assert max(cell_ids_track_mask) < 65536, "cell_id must be less than 65536"
 
-        cv2.imwrite(
-            str(res_path / f"mask{frame_idx:03d}.tif"), track_mask.astype(np.uint16)
-        )
+        cv2.imwrite(str(res_path / f"mask{frame_idx:03d}.tif"), track_mask.astype(np.uint16))
 
         if not self.segment:
             parent_ids = inference_state["parent_ids"][frame_idx].cpu().numpy()
             res_track = inference_state["res_track"]
             # Build a safe lookup so missing IDs don't crash asymmetric lineage output.
-            parent_lookup = {
-                int(cell_id): int(parent_id)
-                for cell_id, parent_id in zip(cell_ids, parent_ids, strict=False)
-            }
+            parent_lookup = {int(cell_id): int(parent_id) for cell_id, parent_id in zip(cell_ids, parent_ids, strict=False)}
 
             for cell_id in cell_ids_track_mask.tolist():
                 parent_id = parent_lookup.get(int(cell_id), 0)
                 if cell_id not in res_track[:, 0]:
-                    res_track = np.concatenate(
-                        [
-                            res_track,
-                            np.array([[cell_id, frame_idx, frame_idx, parent_id]]),
-                        ],
-                        axis=0,
-                    )
+                    res_track = np.concatenate([res_track, np.array([[cell_id, frame_idx, frame_idx, parent_id]]),],axis=0,)
                 else:
                     prev_end = res_track[res_track[:, 0] == cell_id, 2]
                     if prev_end.size and prev_end[0] != frame_idx - 1:
-                        logger.warning(
-                            "Non-contiguous track for id %s at frame %s (prev_end=%s).",
-                            cell_id,
-                            frame_idx,
-                            int(prev_end[0]),
-                        )
+                        logger.warning("Non-contiguous track for id %s at frame %s (prev_end=%s).",cell_id,frame_idx,int(prev_end[0]),)
                     res_track[res_track[:, 0] == cell_id, 2] = frame_idx
 
-            np.savetxt(res_path / "res_track.txt", res_track, fmt="%d")
+            np.savetxt(res_path / "summary" / "res_track.txt", res_track, fmt="%d")
 
             inference_state["res_track"] = res_track
 
-    def save_tracking_results(self, inference_state, tracking_results, alpha=0.3):
+    def save_tracking_results(self, inference_state, tracking_results, alpha=0.3, fps=4.0):
         res_path = inference_state["res_path"]
 
+        # Determine mode and number of colors
         if self.segment:
             num_colors = 1000
+            mode = "segment"
         else:
-            num_colors = (
-                inference_state["max_obj_id"] + 1
-            )  # Add 1 to account for 0-based indexing
+            num_colors = max(1000, inference_state["max_obj_id"] + 1)  # Add 1 to account for 0-based indexing
+            mode = "track"
         colors = np.random.randint(0, 255, (num_colors, 3))
-        color_stack = np.zeros(
-            (
-                len(tracking_results),
-                inference_state["video_height"],
-                inference_state["video_width"],
-                3,
-            ),
-            dtype=np.uint8,
-        )
-        # Keep a persistent mother->bud link overlay for asymmetric lineage visualization.
+
+        # Prepare prediction frames
+        pred_frames = []
         parent_map = {}
         if not self.segment:
             res_track = inference_state.get("res_track")
@@ -1171,79 +876,60 @@ class SAM2AutomaticCellTracker:
         for frame_idx, track_mask in enumerate(tracking_results):
             img = read_image(str(inference_state["video_path"] / f"t{frame_idx:03d}.tif"), return_np=True)
 
-            # Create a colored overlay image
-            overlay = np.zeros_like(img)
+            # Create colored frame for prediction
+            pred_frame, centroids = create_colored_frame(img, track_mask, colors, alpha)
 
-            cell_ids = np.unique(track_mask)
-            cell_ids = cell_ids[cell_ids != 0]  # Exclude background (0)
-
-            # Add colored masks for each cell
-            for cell_id in cell_ids:
-                mask = track_mask == cell_id
-                overlay[mask] = colors[cell_id]
-
-            # Blend original image with colored overlay
-            color_stack[frame_idx] = cv2.addWeighted(img, 1 - alpha, overlay, alpha, 0)
-
-            centroids = {}
-            for cell_id in cell_ids:
-                mask = track_mask == cell_id
-                y_coords, x_coords = np.where(mask)
-                if len(y_coords) == 0:
-                    continue
-
-                centroid_y = int(np.mean(y_coords))
-                centroid_x = int(np.mean(x_coords))
-                centroids[int(cell_id)] = (centroid_x, centroid_y)
-
-                cv2.putText(
-                    color_stack[frame_idx],
-                    str(cell_id),
-                    (centroid_x - 5, centroid_y + 3),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,  # Font scale
-                    (0, 0, 0),  # black color
-                    1,  # Line thickness
-                    cv2.LINE_AA,
-                )
-
+            # Draw division lines for prediction
             if not self.segment and parent_map:
-                for child_id, parent_id in parent_map.items():
-                    child_centroid = centroids.get(child_id)
-                    parent_centroid = centroids.get(parent_id)
-                    if child_centroid is None or parent_centroid is None:
-                        continue
-                    cv2.line(
-                        color_stack[frame_idx],
-                        child_centroid,
-                        parent_centroid,
-                        (0, 0, 0),  # Black color
-                        1,
-                    )  # Line thickness
+                draw_division_lines(pred_frame, centroids, parent_map)
 
-            # Add frame number to top of frame
-            cv2.putText(
-                color_stack[frame_idx],
-                f"{frame_idx:03}",
-                (0, 15),  # Position in top-left
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,  # Font scale
-                (255, 255, 255),  # White color
-                1,  # Line thickness
-                cv2.LINE_AA,
-            )
+            # Add frame number
+            add_frame_number(pred_frame, frame_idx)
 
-        # Save as video
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        mode = "segment" if self.segment else "track"
-        out = cv2.VideoWriter(
-            str(res_path / f"pred_{mode}_video.mp4"),
-            fourcc,
-            10.0,  # 10 fps
-            (inference_state["video_width"], inference_state["video_height"]),
-        )
+            pred_frames.append(pred_frame)
 
-        for frame in color_stack:
-            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        # Save prediction video
+        pred_video_path = str(res_path / "summary" /f"pred_{mode}_video.mp4")
+        save_video(pred_frames, pred_video_path, fps=fps)
 
-        out.release()
+        # Prepare ground truth frames
+        gt_frames = []
+        gt_parent_map = {}
+
+        # Load ground truth tracking data
+        gt_track_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / "man_track.txt"
+
+        if gt_track_path.exists():
+            gt_track_data = np.loadtxt(gt_track_path, dtype=np.int32)
+            if gt_track_data.ndim == 1:
+                gt_track_data = gt_track_data.reshape(1, -1)
+            for row in gt_track_data:
+                cell_id, _, _, parent_id = row
+                if parent_id > 0:
+                    gt_parent_map[int(cell_id)] = int(parent_id)
+
+        for frame_idx in range(len(tracking_results)):
+            img = read_image(str(inference_state["video_path"] / f"t{frame_idx:03d}.tif"), return_np=True)
+            gt_mask_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / f"man_track{frame_idx:03d}.tif"
+            gt_mask = cv2.imread(str(gt_mask_path), cv2.IMREAD_UNCHANGED) if gt_mask_path.exists() else None
+
+            if gt_mask is not None:
+                # Create colored frame for ground truth
+                gt_frame, gt_centroids = create_colored_frame(img, gt_mask, colors, alpha)
+
+                # Draw division lines for ground truth
+                if gt_parent_map:
+                    draw_division_lines(gt_frame, gt_centroids, gt_parent_map)
+
+                # Add frame number
+                add_frame_number(gt_frame, frame_idx)
+
+                gt_frames.append(gt_frame)
+            else:
+                gt_frames.append(img)
+
+        # Save ground truth video
+        gt_video_path = str(res_path /  "summary" / f"gt_{mode}_video.mp4")
+        save_video(gt_frames, gt_video_path, fps=fps)
+        man_track_path = inference_state["video_path"].parent / f"{inference_state['video_path'].name}_GT" / "TRA" / f"man_track.txt"
+        shutil.copy(man_track_path, res_path /  "summary" / "man_track.txt")
