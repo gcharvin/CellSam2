@@ -221,6 +221,7 @@ class LineageFromTracking:
         df_result = df_cells.copy()
         df_result["parent_id"] = parent_ids
         self.df_lineage = df_result
+
         return df_result
 
     def save_lineage(self, output_path: Path, header: bool = False):
