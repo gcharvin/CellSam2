@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 import json
 from pathlib import Path
-
 import numpy
 import numpy as np
 import cv2
 
-
-# ------------------------------------------------------------
-# IO
-# ------------------------------------------------------------
 def load_mask(path: Path):
     if not path.exists():
         return None
@@ -211,10 +206,6 @@ def compute_metrics(tp: int, fp: int, fn: int) -> tuple:
     f1 = round(2 * precision * recall / (precision + recall + 1e-12), 3) if (precision + recall) > 0 else 0.0
 
     return  precision, recall, f1
-
-
-
-
 
 
 if __name__ == '__main__':

@@ -84,7 +84,7 @@ def make_video_gt(img_dir: Path,
 if __name__ == '__main__':
     id_video = 13
     data_dir = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/HC_lab/moma_N_0_rechecked_cleaned/val/CTC")
-    gt_video_path = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/HC_lab/resul") / f"gt_video_{id_video}.mp4"
+    gt_video_path = Path("/HC_lab/videos") / f"gt_video_{id_video}.mp4"
     img_dir = data_dir / f"{id_video:02d}"
     mask_dir = data_dir / f"{id_video:02d}_GT/TRA"
 

@@ -1,20 +1,83 @@
-#!/usr/bin/env python3
-import json
 from pathlib import Path
-
-import numpy
 import numpy as np
-import cv2
+from utils import load_mask
 
+def evaluate_single_prediction(
+    gt_mask_dir: Path,
+    man_track_path: Path,
+    pred_mask_dir: Path,
+    pred_lineage_path: Path,
+    temporal_tolerance: int = 3,
+    max_future_frame_offset: int = 2,
+    iou_thresh_mother: float = 0.5,
+    iou_thresh_bud: float = 0.2
+) -> dict:
+    """
+    Évalue une seule méthode de prédiction de division par rapport à la ground truth
 
-# ------------------------------------------------------------
-# IO
-# ------------------------------------------------------------
-def load_mask(path: Path):
-    if not path.exists():
-        return None
-    return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    Args:
+        gt_mask_dir: Répertoire des masques GT (ex: .../12_GT/TRA)
+        man_track_path: Chemin vers le fichier man_track.txt GT
+        pred_mask_dir: Répertoire des masques prédits
+        pred_lineage_path: Chemin vers le fichier res_track.txt prédit
+        temporal_tolerance: Tolérance temporelle pour l'appariement
+        max_future_frame_offset: Offset temporel maximal
+        iou_thresh_mother: Seuil IoU pour les mères
+        iou_thresh_bud: Seuil IoU pour les bourgeons
 
+    Returns:
+        Dictionnaire avec les métriques d'évaluation
+    """
+    # Charger les événements GT
+    gt_events = load_full_division_events(man_track_path)
+
+    # Charger les événements prédits
+    pred_events = load_full_division_events(pred_lineage_path)
+
+    # Compter les bourgeons sans parents
+    parentless_pred = count_parentless_predictions(pred_lineage_path)
+    total_pred_buds = len(pred_events)
+    parentless_ratio = round(parentless_pred / total_pred_buds, 3) if total_pred_buds > 0 else 0.0
+
+    # Appariement spatio-temporel
+    tp, fp, fn, avg_time_error, std_time_error, avg_iou_mother, avg_iou_bud = match_division_events(
+        gt_events, pred_events,
+        gt_mask_dir, pred_mask_dir,
+        temporal_tolerance, max_future_frame_offset, iou_thresh_mother, iou_thresh_bud
+    )
+
+    # Calcul des métriques
+    precision, recall, f1 = compute_metrics(tp, fp, fn)
+
+    # Créer le rapport d'évaluation
+    metrics = {
+        "gt_video_dir": str(gt_mask_dir),
+        "pred_video_dir": str(pred_mask_dir),
+        "man_track_path": str(man_track_path),
+        "pred_lineage_path": str(pred_lineage_path),
+        "temporal_tolerance": temporal_tolerance,
+        "max_future_frame_offset": max_future_frame_offset,
+        "iou_thresh_mother": iou_thresh_mother,
+        "iou_thresh_bud": iou_thresh_bud,
+        "metrics": {
+            "gt_division_events": len(gt_events),
+            "pred_division_events": total_pred_buds,
+            "parentless_pred": parentless_pred,
+            "parentless_ratio": parentless_ratio,
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "avg_time_error": float(avg_time_error),
+            "std_time_error": float(std_time_error),
+            "avg_iou_mother": float(avg_iou_mother),
+            "avg_iou_bud": float(avg_iou_bud),
+        }
+    }
+
+    return metrics
 
 def load_full_division_events(track_file: Path):
     """
@@ -44,7 +107,7 @@ def binary_mask(mask, label):
     return m if m.any() else None
 
 
-def compute_iou(a : numpy.bool, b: numpy.bool):
+def compute_iou(a : np.bool, b: np.bool):
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     if union == 0:
@@ -145,65 +208,6 @@ def match_division_events(gt_events, pred_events, gt_mask_dir, pred_mask_dir, te
 
     return tp, fp, fn, avg_time_error, std_time_error, avg_iou_mother, avg_iou_bud
 
-
-
-def eval_division_by_video(
-    gt_video_dir: Path,
-    pred_video_dir: Path,
-    temporal_tolerance: int = 3,
-    max_future_frame_offset: int = 2,
-    iou_thresh_mother: float = 0.5,
-    iou_thresh_bud: float = 0.3,
-):
-    # Charger les événements complets (mère + bourgeon + frame)
-    gt_events = load_full_division_events(gt_video_dir / "man_track.txt")
-    pred_events = load_full_division_events(pred_video_dir / "summary" / "res_track.txt")
-
-    # Compter les bourgeons sans parents
-    parentless_pred = count_parentless_predictions(pred_video_dir / "summary" / "res_track.txt")
-    # Nombre total de bourgeons prédits
-    total_pred_buds = len(pred_events)
-
-    # Calcul du ratio des bourgeons sans parents
-    parentless_ratio = round(parentless_pred / total_pred_buds, 3) if total_pred_buds > 0 else 0.0
-
-
-    # Appariement spatio-temporel
-    # Appariement spatio-temporel
-    tp, fp, fn, avg_time_error, std_time_error, avg_iou_mother, avg_iou_bud = match_division_events(
-        gt_events, pred_events,
-        gt_video_dir, pred_video_dir,
-        temporal_tolerance, max_future_frame_offset, iou_thresh_mother, iou_thresh_bud
-    )
-
-    # Calcul des métriques
-    precision, recall, f1 = compute_metrics(tp, fp, fn)
-
-    metrics = {
-        "gt_video_dir": str(gt_video_dir),
-        "pred_video_dir": str(pred_video_dir),
-        "temporal_tolerance": temporal_tolerance,
-        "max_future_frame_offset": max_future_frame_offset,
-        "iou_thresh_mother": iou_thresh_mother,
-        "iou_thresh_bud": iou_thresh_bud,
-        "metrics": {
-            "tp": tp,
-            "fp": fp,
-            "fn": fn,
-            "parentless_pred": parentless_pred,
-            "parentless_ratio": parentless_ratio,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "avg_time_error": avg_time_error,
-            "std_time_error": std_time_error,
-            "avg_iou_mother": avg_iou_mother,
-            "avg_iou_bud": avg_iou_bud,
-        }
-    }
-    return metrics
-
-
 def compute_metrics(tp: int, fp: int, fn: int) -> tuple:
 
     precision = round(tp / (tp + fp + 1e-12), 3)
@@ -211,10 +215,6 @@ def compute_metrics(tp: int, fp: int, fn: int) -> tuple:
     f1 = round(2 * precision * recall / (precision + recall + 1e-12), 3) if (precision + recall) > 0 else 0.0
 
     return  precision, recall, f1
-
-
-
-
 
 
 if __name__ == '__main__':
@@ -226,15 +226,15 @@ if __name__ == '__main__':
     gt_video_dir = Path("/home/hcourtei/Projects/Cell_proj/data/moma_N_0_checked/moma/val/CTC/12_GT/TRA")
     pred_video_dir = Path("/home/hcourtei/Projects/Cell_proj/CellSam2Gilles/eval_model/model:moma_N0_checked_v100/data_vers:moma_N0_checked/12")
 
-
-    metrics_by_video = eval_division_by_video(
-        gt_video_dir,
-        pred_video_dir,
-        temporal_tolerance,
-        max_future_frame_offset,
-        iou_thresh_mother,
-        iou_thresh_bud,
-    )
-
-    print("metrics_by_video")
-    print(json.dumps(metrics_by_video, indent=2))
+    #
+    # metrics_by_video = eval_division_by_video(
+    #     gt_video_dir,
+    #     pred_video_dir,
+    #     temporal_tolerance,
+    #     max_future_frame_offset,
+    #     iou_thresh_mother,
+    #     iou_thresh_bud,
+    # )
+    #
+    # print("metrics_by_video")
+    # print(json.dumps(metrics_by_video, indent=2))

@@ -1,4 +1,5 @@
 from PIL import Image
+from pathlib import Path
 import numpy as np
 import cv2
 
@@ -37,3 +38,9 @@ def get_centroid(mask: np.ndarray, cell_id: int) -> tuple:
     except Exception as e:
         print(f"Erreur dans get_centroid: {e}")
     return cx,cy
+
+# ------------------------------------------------------------
+def load_mask(path: Path):
+    if not path.exists():
+        return None
+    return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)

@@ -15,7 +15,7 @@ from inference_utils import (get_device, get_result_path, get_tif_directories, g
 
 # Local imports
 from sam2.build_sam import build_sam2
-from tools.eval_division_iou_temporal import eval_division_by_video
+from eval_division import eval_division_by_video
 
 
 def parse_args():
