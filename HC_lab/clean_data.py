@@ -1,5 +1,15 @@
-import shutil
+"""
+Script de validation, analyse et nettoyage des données de suivi cellulaire (cell tracking).
+Ce script lit des masques d'images et des fichiers de suivi manuel (man_track.txt),
+vérifie leur cohérence, extrait les informations cellulaires, et nettoie les données si nécessaire.
 
+Fonctionnalités principales :
+- Validation des IDs, frames, relations parent-enfant, durée de vie et aire des cellules.
+- Extraction des données des masques (aires, centroïdes, frames d'apparition).
+- Nettoyage des données : suppression des cellules problématiques, recalcul des IDs, sauvegarde des données corrigées.
+- Automatisation du traitement pour plusieurs vidéos (train/val).
+"""
+import shutil
 import cv2
 import numpy as np
 import pandas as pd
@@ -20,7 +30,7 @@ class CellInfo:
     centroids: List[Tuple[int, int]]
 
 class MaskLineageCellGT:
-    def __init__(self, data_dir, id_video, min_live_cell=2, min_area_cell=30):
+    def __init__(self, data_dir: Path, id_video: int, min_live_cell=2, min_area_cell=30):
         self.id_video = id_video
         self.data_dir = data_dir
         self.mask_dir = data_dir / f"{id_video:02d}_GT/TRA"
@@ -124,10 +134,10 @@ class MaskLineageCellGT:
         print("-> verification man_track.txt")
 
         val_man_track = (self._check_ids_continuous()
-               & self._check_frames_valid()
-               & self._check_parentless_cells()
-               & self._check_parent_child_relationships()
-               & self._check_lifetime()
+                       & self._check_frames_valid()
+                       & self._check_parentless_cells()
+                       & self._check_parent_child_relationships()
+                       & self._check_lifetime()
                          )
 
 
@@ -206,7 +216,7 @@ class MaskLineageCellGT:
 
         return cell_data_from_mask
 
-    def check_data(self):
+    def check_data(self)-> bool:
         """Vérifie la cohérence complète des données"""
         print(f"Vérification des données dans {self.mask_dir}")
 

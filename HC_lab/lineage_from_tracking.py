@@ -1,3 +1,20 @@
+"""
+Module pour le suivi de lignée cellulaire à partir de masques de segmentation.
+
+Ce module fournit une classe `LineageFromTracking` qui permet de :
+1. Charger et analyser les masques de segmentation cellulaire
+2. Calculer les durées de vie des cellules
+3. Établir les relations de lignée parent-enfant
+4. Sauvegarder les résultats dans un format compatible avec les outils d'évaluation
+
+Fonctionnalités principales :
+- Détection des centroïdes cellulaires avec OpenCV
+- Filtrage des cellules par durée de vie minimale
+- Appariement des cellules entre frames consécutives
+- Calcul des relations de lignée basées sur la proximité spatiale
+- Sauvegarde des résultats au format lineage_from_track.txt
+
+"""
 import os
 import cv2
 import numpy as np

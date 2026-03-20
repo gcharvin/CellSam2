@@ -1,6 +1,28 @@
+"""
+Module pour l'évaluation des prédictions de division cellulaire.
+
+Ce module fournit des outils pour comparer les événements de division prédits
+avec une ground truth (GT) de référence. Il permet d'évaluer la qualité de
+la détection des divisions cellulaires en termes de précision, rappel et métriques
+spatio-temporelles.
+
+Fonctionnalités principales :
+- Chargement des événements de division depuis des fichiers de tracking
+- Appariement spatio-temporel des événements prédits et GT
+- Calcul de métriques d'évaluation (TP, FP, FN, précision, rappel, F1, IoU, etc.)
+- Analyse des erreurs temporelles et spatiales
+
+Fonctions principales :
+- evaluate_single_prediction() : Évalue une seule méthode de prédiction
+- load_full_division_events() : Charge les événements de division depuis un fichier
+- match_division_events() : Apparie les événements prédits avec la GT
+- compute_metrics() : Calcule les métriques de performance
+"""
+
 from pathlib import Path
 import numpy as np
 from utils import load_mask
+from typing import List
 
 def evaluate_single_prediction(
     gt_mask_dir: Path,
@@ -79,7 +101,7 @@ def evaluate_single_prediction(
 
     return metrics
 
-def load_full_division_events(track_file: Path):
+def load_full_division_events(track_file: Path)-> List[int, int, int]:
     """
     Retourne une liste d'événements de division complets : (mother_id, bud_id, start_frame)
     """
@@ -100,14 +122,14 @@ def load_full_division_events(track_file: Path):
 # ------------------------------------------------------------
 # Masks & iou
 # ------------------------------------------------------------
-def binary_mask(mask, label):
+def binary_mask(mask : np.ndarray, label: int)-> np.bool:
     if mask is None:
         return None
     m = (mask == label)
     return m if m.any() else None
 
 
-def compute_iou(a : np.bool, b: np.bool):
+def compute_iou(a : np.bool, b: np.bool)-> float:
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     if union == 0:
@@ -118,7 +140,7 @@ def compute_iou(a : np.bool, b: np.bool):
 # ------------------------------------------------------------
 # Temporal + spatial matching
 # ------------------------------------------------------------
-def find_best_future_overlap(gt_mask_dir, pred_mask_dir, gt_label, pred_label, gt_frame, max_frame_offset):
+def find_best_future_overlap(gt_mask_dir, pred_mask_dir, gt_label, pred_label, gt_frame, max_frame_offset)-> float:
     best = 0.0
 
     for dt in range(max_frame_offset + 1):
@@ -139,7 +161,7 @@ def find_best_future_overlap(gt_mask_dir, pred_mask_dir, gt_label, pred_label, g
     return best
 
 
-def count_parentless_predictions(res_track_path):
+def count_parentless_predictions(res_track_path: Path)-> int:
     with open(res_track_path, 'r') as f:
         lines = f.readlines()
 
