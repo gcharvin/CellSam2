@@ -74,6 +74,9 @@ FEATURE_NAMES = [
     "sam2_cosine_mean",
     "sam2_cosine_min",
     "sam2_cosine_trend",
+    "sam2_neck_cosine_mean",
+    "sam2_neck_cosine_min",
+    "sam2_neck_valid_fraction",
 ]
 
 
@@ -401,6 +404,21 @@ def compute_temporal_features(cand: Candidate, seq_context: dict, args: argparse
     }
 
 
+def _neck_region_mask(
+    bud_mask: np.ndarray,
+    mother_mask: np.ndarray,
+    interface_radius: int,
+) -> np.ndarray:
+    """Bud pixels that lie in the interface ring just outside the mother boundary."""
+    if interface_radius <= 0:
+        return np.zeros_like(bud_mask)
+    kernel_size = 2 * interface_radius + 1
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    dilated = cv2.dilate(mother_mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+    interface_ring = dilated & (~mother_mask)
+    return interface_ring & bud_mask
+
+
 def compute_sam2_features(
     cand: Candidate,
     seq_context: dict,
@@ -408,12 +426,16 @@ def compute_sam2_features(
     extractor: SAM2EmbeddingExtractor | None,
     args: argparse.Namespace,
 ) -> dict:
+    null_result = {
+        "sam2_cosine_mean": 0.0,
+        "sam2_cosine_min": 0.0,
+        "sam2_cosine_trend": 0.0,
+        "sam2_neck_cosine_mean": 0.0,
+        "sam2_neck_cosine_min": 0.0,
+        "sam2_neck_valid_fraction": 0.0,
+    }
     if image_dir is None or extractor is None:
-        return {
-            "sam2_cosine_mean": 0.0,
-            "sam2_cosine_min": 0.0,
-            "sam2_cosine_trend": 0.0,
-        }
+        return null_result
 
     track_infos: Dict[int, TrackInfo] = seq_context["track_infos"]
     bin_masks = seq_context["bin_masks"]
@@ -421,26 +443,35 @@ def compute_sam2_features(
     end_frame = min(bud_track.end, bud_track.start + args.first_frames - 1)
     frame_range = range(bud_track.start, end_frame + 1)
     cosine_values: List[float] = []
+    neck_cosine_values: List[float] = []
+    total_frames = 0
     for frame_idx in frame_range:
         bud_mask = bin_masks.get(frame_idx, {}).get(cand.bud_id)
         mother_mask = bin_masks.get(frame_idx, {}).get(cand.mother_id)
         if bud_mask is None or mother_mask is None:
             continue
+        total_frames += 1
         bud_embed = extractor.pool_object_embedding(image_dir, frame_idx, bud_mask)
         mother_embed = extractor.pool_object_embedding(image_dir, frame_idx, mother_mask)
         cosine_values.append(cosine_similarity(bud_embed, mother_embed))
 
+        neck_mask = _neck_region_mask(bud_mask, mother_mask, args.interface_radius)
+        neck_embed = extractor.pool_object_embedding(image_dir, frame_idx, neck_mask)
+        if neck_embed is not None:
+            neck_cosine_values.append(cosine_similarity(neck_embed, mother_embed))
+
     if not cosine_values:
-        return {
-            "sam2_cosine_mean": 0.0,
-            "sam2_cosine_min": 0.0,
-            "sam2_cosine_trend": 0.0,
-        }
+        return null_result
+
+    neck_valid_fraction = len(neck_cosine_values) / float(total_frames) if total_frames > 0 else 0.0
 
     return {
         "sam2_cosine_mean": float(np.mean(cosine_values)),
         "sam2_cosine_min": float(np.min(cosine_values)),
         "sam2_cosine_trend": float(cosine_values[-1] - cosine_values[0]) if len(cosine_values) > 1 else 0.0,
+        "sam2_neck_cosine_mean": float(np.mean(neck_cosine_values)) if neck_cosine_values else 0.0,
+        "sam2_neck_cosine_min": float(np.min(neck_cosine_values)) if neck_cosine_values else 0.0,
+        "sam2_neck_valid_fraction": neck_valid_fraction,
     }
 
 
@@ -486,6 +517,9 @@ def features_from_candidate(candidate: Candidate, proposal_parent: int, extra_fe
             extra_features["sam2_cosine_mean"],
             extra_features["sam2_cosine_min"],
             extra_features["sam2_cosine_trend"],
+            extra_features["sam2_neck_cosine_mean"],
+            extra_features["sam2_neck_cosine_min"],
+            extra_features["sam2_neck_valid_fraction"],
         ],
         dtype=np.float64,
     )
