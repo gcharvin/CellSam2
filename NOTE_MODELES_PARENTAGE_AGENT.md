@@ -601,12 +601,58 @@ Limite actuelle de standardisation:
   - optimisation globale
   - ecriture des sorties
 
+### 9. Pairwise + SAM2 neck-region features (tente, rejete)
+
+Nom court:
+- `pairwise-temporal-sam2-neck-blend060-v1`
+
+Principe:
+- meme modele que le meilleur actuel
+- ajout de 3 features: pooling SAM2 sur la region neck (interface mere-bud) plutot que sur l'objet entier:
+  - `sam2_neck_cosine_mean`
+  - `sam2_neck_cosine_min`
+  - `sam2_neck_valid_fraction`
+- hypothese: l'isthme au point d'emergence est distinctif; les embeddings localises devraient discriminer ancetre/mere/descendante
+
+Implementation:
+- fichier: `tools/learned_bud_rerank.py`
+- fonction: `_neck_region_mask` (nouvelle), `compute_sam2_features` (modifiee)
+- `FEATURE_NAMES` passe de 23 a 26 features
+
+Run:
+- `/home/charvin-admin/Documents/cellSAM2/experiments/20260406_0942_d226da0_pairwise-temporal-sam2-neck-blend060-v1`
+
+Scores:
+- `val_holdout` F1: `0.649007` (ref: `0.662420`)
+- `val_holdout` diagnostic:
+  - `stable_correct_parent = 38` (ref: 41)
+  - `stable_wrong_parent = 11` (ref: 9)
+  - `stable_orphan = 3` (ref: 2)
+
+Interpretation:
+- les features neck sont non-nulles (mean=0.495, std=0.162) et reccoivent des poids significatifs
+- le resultat est **pire** que la reference: -0.013 F1, -3 correct, +2 wrong
+- la degradation est concentree sur la video 13 (cavite la plus dense)
+- cause probable: la similarite cosinus SAM2 dans la region neck est trop peu specifique
+  - les cellules adjacentes (ancetres inclus) partagent le meme voisinage spatial
+  - le signal neck ne discrimine pas l'isthme d'emergence de la proximite geometrique banale
+
+Decision:
+- **rejete** - garder `pairwise-temporal-sam2-blend060-v1` comme reference
+
+Ce qui reste ouvert:
+- un extracteur de patch brut sur la region neck (CNN local) pourrait aider
+  mais requiert une capacite de modele superieure au dataset actuel
+- `sam2_neck_valid_fraction` seul (confirmation de contact) pourrait etre utile
+  comme regulariseur geometrique, a tester en isolation
+
 ## Recommandation Courante
 
 Pour un agent futur:
 - prendre `pairwise-temporal-sam2-blend060-v1` comme meilleure reference
 - ne pas pousser plus loin les heuristiques pures
 - ne pas pousser plus loin le transformer listwise actuel
+- ne pas explorer d'autres variantes de features SAM2 cosinus (global ou neck): signal trop peu specifique
 - si apprentissage plus riche:
   - partir du diagnostic local `ancetre / mere / descendante`
   - pas d'un contexte generique seulement
